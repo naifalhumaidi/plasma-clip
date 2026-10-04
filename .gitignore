@@ -1,0 +1,19 @@
+# Build artifact — never commit
+custom-clipboard
+*.o
+*.so
+
+# Rendered previews / scratch output
+/out/
+/tmp/
+*.png.tmp
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Local overrides
+*.local

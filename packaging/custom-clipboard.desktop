@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Custom Clipboard
+GenericName=Clipboard History
+Comment=Clipboard history popup that pastes on click
+Exec=custom-clipboard
+Icon=edit-paste
+Terminal=false
+Categories=Utility;
+Keywords=clipboard;copy;paste;history;
+StartupNotify=false
+X-KDE-autostart-phase=2

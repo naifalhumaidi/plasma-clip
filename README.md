@@ -1,0 +1,181 @@
+# custom-clipboard
+
+A clipboard history popup for KDE Plasma with **click-to-paste**, laid out like
+the Windows 11 clipboard panel and themed with Plasma/Breeze colours.
+
+Press **Meta+V** (Win+V), click an item, and it is pasted straight into whatever
+input you were typing in. No Ctrl+V afterwards.
+
+![The popup](docs/preview.png)
+
+---
+
+## Install
+
+```bash
+cd <this folder>
+./install.sh
+```
+
+No root needed. It builds, installs to `~/.local/bin`, registers autostart,
+enables the `ydotool` helper and releases Klipper's Meta+V.
+
+**Log out and back in afterwards** so the shell picks up the key change.
+
+To try it without installing:
+
+```bash
+./build.sh && ./custom-clipboard &
+```
+
+### Requirements
+
+| Need | Why | Arch / CachyOS |
+|---|---|---|
+| Qt6 dev | build | `sudo pacman -S qt6-base` |
+| KGlobalAccel | the Meta+V shortcut | `sudo pacman -S kglobalaccel` |
+| g++ | build | `sudo pacman -S gcc` |
+| **ydotool** | **injects Ctrl+V** | `sudo pacman -S ydotool` |
+
+Debian/Ubuntu: `qt6-base-dev`, `libkf6globalaccel-dev`, `g++`, `ydotool`.
+
+`build.sh` checks all four and names any that are missing.
+
+**ydotool is the one that matters.** Without it the app still copies on click,
+but you press Ctrl+V yourself. It writes to `/dev/uinput`, the kernel's
+virtual-input device — the only reliable way to send a keystroke to another
+application on Wayland.
+
+Verify:
+
+```bash
+systemctl --user is-active ydotool.service   # expect: active
+ydotool key 29:1 29:0                        # expect: silent, exit 0
+```
+
+---
+
+## Using it
+
+| Action | How |
+|---|---|
+| Open / close | **Meta+V** |
+| Paste an item | click it, or select + `Enter` |
+| Search | type in the search box |
+| Switch tab | **All** / **Starred** |
+| Star an item | hover the row → **★** (left button) |
+| Delete an item | hover the row → **✕** (right button), or right-click → Delete |
+| Copy without pasting | right-click → Copy only |
+| Add an entry | **＋ New**, type, `Enter` |
+| Clear unstarred entries | **Clear**, then confirm in the popup |
+| Sort | dropdown: Newest / Oldest / A–Z / Z–A |
+| Close without pasting | `Esc` |
+
+![Hover actions](docs/preview-hover.png)
+
+Notes:
+
+- The **Starred** tab only appears when something is starred, so it never
+  clutters the UI. Starred entries are *not* pinned to the top of the All tab —
+  they sort normally and live in their own tab.
+- **Clear** removes every unstarred entry and always keeps starred ones. It asks
+  for confirmation and tells you both counts before you commit.
+- Text and images are both handled. Copied **image files** (a `file://` path to a
+  PNG/JPG/etc.) are detected and shown with a real thumbnail and filename.
+- Timestamps are relative: "just now", "19 min ago", "1 h ago".
+- The popup always reopens on the **All** tab with the search box cleared.
+
+### Clear confirmation
+
+![Clear confirmation](docs/preview-confirm.png)
+
+---
+
+## How it works
+
+Klipper (Plasma's clipboard manager) keeps history in SQLite at
+`~/.local/share/klipper/history3.sqlite`. This app reads that directly, so it is
+**not** limited by Klipper's in-memory cap. Image payloads live as
+content-addressed files under `~/.local/share/klipper/data/`.
+
+Starring, deleting and clearing write to that same database, so Klipper sees the
+changes and keeps its Starred tab in sync.
+
+Clicking an item sets it through Klipper's own D-Bus API, closes the popup, waits
+~200 ms for focus to return to your app, then injects Ctrl+V.
+
+### Unlimited history
+
+`MaxClipItems` in `~/.config/klipperrc` controls how much Klipper keeps. A Plasma
+upgrade can reset it. Re-apply without logging out:
+
+```bash
+kwriteconfig6 --file klipperrc --group General --key MaxClipItems 1000000
+qdbus6 org.kde.klipper /klipper org.kde.klipper.klipper.reloadConfig
+```
+
+`reloadConfig` applies it immediately.
+
+### Why Klipper's Meta+V was released
+
+Klipper ships Meta+V for its own popup and runs *inside plasmashell*, which
+re-registers that key from memory. Changing it over D-Bus reports success and is
+then silently overwritten — the only thing that works is editing
+`~/.config/kglobalshortcutsrc`, and plasmashell re-reads that on next login.
+`install.sh` writes the file and tells you when to re-login. `uninstall.sh`
+restores it.
+
+---
+
+## Configuration
+
+Optional, `~/.config/custom-clipboard.ini`:
+
+```ini
+[General]
+autoPaste=true
+pasteDelayMs=200
+```
+
+- `autoPaste=false` — click-to-paste copies only
+- `pasteDelayMs` — raise if pasting is unreliable (focus has not returned yet).
+  Try `300` or `400`.
+
+---
+
+## Troubleshooting
+
+**Meta+V does nothing.** Klipper may still hold the key. Log out and back in — a
+stale grab lives in `plasmashell`'s memory and only clears on restart.
+
+**Clicking an item copies but does not paste.** Check
+`systemctl --user is-active ydotool.service`. If it is active, raise
+`pasteDelayMs`.
+
+**Pasting goes to the wrong window.** Wayland decides focus; add a little more
+`pasteDelayMs`.
+
+**Nothing happens when I click a row.** You may be clicking the action buttons
+that appear on hover — ★ and ✕ are on the right of each row.
+
+**Clear says "Nothing to clear".** Every entry is starred, and Clear spares
+starred entries by design. Unstar some first.
+
+---
+
+## Uninstall
+
+```bash
+./uninstall.sh
+```
+
+Restores Klipper's Meta+V and removes the binary, autostart entry and config.
+`ydotool.service` is left in place (harmless, 44 KB); remove it with
+`systemctl --user disable --now ydotool.service`.
+
+---
+
+## Further reading
+
+- [DEVELOPMENT.md](DEVELOPMENT.md) — architecture, building, tests
+- [AGENTS.md](AGENTS.md) — hard-won rules for AI agents editing this code
