@@ -64,15 +64,18 @@ States: `all`, `starred`, `search`, `alpha`, `new`, `hover`, `confirm`.
 QT_QPA_PLATFORM=offscreen ./custom-clipboard --test
 ```
 
-53 checks over the read path, sorting, search and tab filtering, the write path,
+56 checks over the read path, sorting, search and tab filtering, the write path,
 the confirm popup, outside-click dismissal, double-click handling and the
-environment.
+environment. The suite prints its own total, so do not quote a number here.
 
 Principles the suite follows:
 
-- **Write tests never touch your history.** `CUSTOM_CLIPBOARD_DATA` overrides the
-  data directory, so tests run against a throwaway copy of the database. There
-  is an explicit assertion that the real database is unchanged.
+- **Write tests never touch your history.** `CUSTOM_CLIPBOARD_DATA` redirects the
+  data directory for the *entire* suite, not just the write-path block. This was
+  once scoped too narrowly and every later check ran against the real database —
+  see [AGENTS.md](AGENTS.md). The suite refuses to start if the sandbox is not
+  active, asserts the real row count is unchanged at the end, and fails loudly
+  if the real history is empty.
 - **Synthetic events, not injected input.** Clicks are delivered with
   `QApplication::sendEvent` straight to the widget. That exercises the same
   hit-testing a real click does without sending anything to the OS input layer.

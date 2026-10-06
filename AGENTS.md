@@ -36,6 +36,26 @@ Ask the user first, every time. Prefer having them log out and back in.
 
 `custom-clipboard` in the repo root is a build artifact and is gitignored.
 
+### 4. Never let a test touch the real clipboard database
+
+This happened here, and it destroyed the maintainer's clipboard history.
+
+`CUSTOM_CLIPBOARD_DATA` was set only around the write-path block and then unset,
+so every check after it ran against the real Klipper database. A regression test
+that clicks the ✕ button deleted real entries on every run.
+
+- Redirect the data directory **for the entire suite**, before anything reads it.
+- Resolve the real database path *before* redirecting. Resolving it afterwards
+  makes "real" point at the sandbox, so the guard passes for the wrong reason.
+- Assert the real row count is unchanged at the end, reading the real file
+  directly — `readHistory()` cannot see past the sandbox.
+- Fail loudly when the real history is empty; otherwise the read and write
+  checks pass *vacuously* rather than meaningfully.
+- Never assert a count. Assert an outcome.
+
+Recovery, if it ever happens: deleted rows survive in `history3.sqlite-wal`, and
+`tools/recover-klipper-history.py` carves them out. Back the database up first.
+
 ## Verify, don't assume
 
 ### Shortcuts: register with `NoAutoloading`

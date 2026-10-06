@@ -22,7 +22,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **＋ New** — add an entry to the clipboard from an inline field.
 - **Clear** — remove every unstarred entry, with an in-window confirmation that
   reports both counts.
-- Headless `--test` suite (53 checks) and `--preview` / `--screenshot` renderers
+- Headless `--test` suite and `--preview` / `--screenshot` renderers
   for inspecting the UI without a display.
 - Opt-in click tracing via `CUSTOM_CLIPBOARD_DEBUG=1`.
 - A clear message when a click cannot paste because `ydotoold` is not running,
@@ -46,6 +46,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   has died. The daemon is now probed rather than assumed.
 - `install.sh` verifies `ydotoold` actually responds, since `enable --now`
   reports success even when the daemon dies on startup.
+- The test suite can no longer reach the real clipboard database. It previously
+  could, and deleted real entries.
 - Starred entries are no longer pinned to the top of the All tab; they sort
   normally and live in their own tab.
 - Removed Klipper's Meta+V binding so this app can own it; Klipper moves to
