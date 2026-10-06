@@ -862,6 +862,28 @@ public:
         return -1;
     }
 
+    // A real double-click: Qt delivers the second press as MouseButtonDblClick,
+// NOT MouseButtonPress. Synthesising two plain presses would hide that.
+static int doubleClickAt(QWidget *target, const QPoint &pos)
+    {
+        const QPointF p(pos);
+        const QPointF g = target->mapToGlobal(pos);
+        int dblClicks = 0;
+        QMouseEvent press(QEvent::MouseButtonPress, p, g, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(target, &press);
+        QMouseEvent rel1(QEvent::MouseButtonRelease, p, g, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(target, &rel1);
+        QMouseEvent dbl(QEvent::MouseButtonDblClick, p, g, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(target, &dbl);
+        if (dbl.isAccepted()) {
+            ++dblClicks;
+        }
+        QMouseEvent rel2(QEvent::MouseButtonRelease, p, g, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(target, &rel2);
+        QApplication::processEvents();
+        return dblClicks;
+    }
+
     static bool clickAt(QWidget *target, const QPoint &pos)
     {
         const QPointF p(pos);
@@ -884,6 +906,76 @@ public:
     QWidget *rootWidget() const
     {
         return root;
+    }
+
+    // Reproduce the reported double-click on the remove button: press, release,
+// then press again at the same spot with no hover in between (exactly what a
+// fast double-click delivers).
+QString doubleClickRemoveForTest(int row)
+    {
+        QString printfLiteral;
+        const QRect r = rowRectFor(row);
+        const QPoint p = removeButtonRect(r).center();
+        m_chooseCount = 0;
+        QWidget *vp = testList()->viewport();
+        const QString target = uuidAtRow(row);
+        const int countBefore = m_list->count();
+
+        Deck::clickAt(vp, p); // first click
+        QApplication::processEvents();
+
+        // No hover move, no mouse move: straight to a second press/release,
+        // delivered as a genuine double-click (second press = DblClick event).
+        const int dbl = Deck::doubleClickAt(vp, p);
+        printfLiteral = QStringLiteral("dblAccepted=%1 ").arg(dbl);
+        QApplication::processEvents();
+        const bool pasted = m_chooseCount > 0;
+        printfLiteral += QStringLiteral("PASTED=%1 ").arg(pasted);
+
+        QString stillThere = QStringLiteral("gone");
+        for (const Entry &e : m_store.entries) {
+            if (e.uuid == target) {
+                stillThere = QStringLiteral("STILL PRESENT");
+            }
+        }
+        return printfLiteral + QStringLiteral("row=%1 removed=%2/%3 %4")
+            .arg(row)
+            .arg(countBefore - m_list->count())
+            .arg(countBefore)
+            .arg(stillThere);
+    }
+
+    // What does the hit-test think is under a viewport point on this row?
+    QString classifyForTest(int row, const QPoint &p)
+    {
+        const QRect r = rowRectFor(row);
+        if (removeButtonRect(r).contains(p)) {
+            return QStringLiteral("remove");
+        }
+        if (starButtonRect(r).contains(p)) {
+            return QStringLiteral("star");
+        }
+        return QStringLiteral("rowbody");
+    }
+
+    QPoint removeCenterForTest(int row)
+    {
+        return removeButtonRect(rowRectFor(row)).center();
+    }
+
+    bool visibleForTest() const
+    {
+        return isVisible();
+    }
+
+    int chooseCountForTest() const
+    {
+        return m_chooseCount;
+    }
+
+    void resetChooseCountForTest()
+    {
+        m_chooseCount = 0;
     }
 
     void flashForTest(const QString &msg)
@@ -1370,7 +1462,13 @@ private:
         }
         // The hover action buttons are painted by the delegate, so the click has
         // to be hit-tested here — they are not real widgets.
-        if (ev->type() == QEvent::MouseButtonPress
+        //
+        // MouseButtonDblClick must be handled too. Qt delivers the second press
+        // of a double-click as a *DblClick* event, not a Press, so a filter that
+        // only watches Press lets the second click fall through to the list,
+        // which then emits itemClicked and PASTES an entry. That is why clicking
+        // the X twice quickly deleted one row and pasted another.
+        if ((ev->type() == QEvent::MouseButtonPress || ev->type() == QEvent::MouseButtonDblClick)
             && (watched == m_list->viewport() || watched == m_starList->viewport())) {
             auto *me = static_cast<QMouseEvent *>(ev);
             auto *view = qobject_cast<QAbstractItemView *>(qobject_cast<QWidget *>(watched)->parentWidget());
@@ -1481,6 +1579,7 @@ private:
             return;
         }
         const Entry e = m_store.entries.at(idx);
+        ++m_chooseCount;
         applyEntry(e);
 
         const QSettings cfg;
@@ -1523,6 +1622,7 @@ private:
 
     QWidget *root = nullptr;
     bool m_deactivateArmed = false;
+    int m_chooseCount = 0; // pastes attempted; lets tests assert on the paste
     QPoint m_cursorOverride;
     QTabBar *m_tabBar = nullptr;
     QStackedWidget *m_stack = nullptr;
@@ -1882,6 +1982,30 @@ int runTests(Deck *deck)
     check(deck->statusVisibleForTest(), "the status message is shown");
     check(deck->statusIsOverlayForTest(), "the status message is mouse-transparent so rows stay clickable");
     deck->hide();
+
+    printf("\n== fast double-click on remove ==\n");
+    // Reported: clicking the X twice quickly deleted one entry and pasted
+    // another. Qt sends the second press as MouseButtonDblClick, which the
+    // button hit-test ignored, so it fell through to the list and pasted.
+    // doubleClickRemoveForTest() replays that exact sequence.
+    {
+        deck->reload();
+        deck->showForTest();
+        const int r = 0;
+        const QString report = deck->doubleClickRemoveForTest(r);
+        check(!report.contains(QStringLiteral("PASTED=1")),
+              "double-clicking the X button never pastes an entry");
+        check(report.contains(QStringLiteral("PASTED=0")),
+              "the second click of a double-click is consumed by the button, not the list");
+        // A double-click on the row *body* is still a normal paste.
+        deck->reload();
+        deck->showForTest();
+        deck->resetChooseCountForTest();
+        const QPoint body = QPoint(20, deck->rowRectFor(0).center().y());
+        Deck::clickAt(deck->testList()->viewport(), body);
+        check(deck->chooseCountForTest() == 1, "a single click on the row body still pastes");
+        deck->hide();
+    }
 
     printf("\n== confirm popup ==\n");
     // Regression: the panel widget was a constructor *local*, so the member
