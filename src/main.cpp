@@ -562,6 +562,10 @@ public:
     Deck()
     {
         setWindowTitle(QStringLiteral("Clipboard"));
+        // NOTE: deliberately a Tool window, not Qt::Popup. A popup needs a live
+        // transient parent, and anchoring one to the focused window made the
+        // panel fail to appear at all. Dismissal on an outside click is handled
+        // by the activation-change handler in event() instead.
         setWindowFlags(Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
         setAttribute(Qt::WA_TranslucentBackground);
         setMouseTracking(true);
@@ -847,6 +851,24 @@ public:
         return root;
     }
 
+    // --- dismissal rule, under test ------------------------------------------
+    // Lets the headless suite act out "the compositor deactivated us" with the
+    // pointer at a chosen spot, without a real desktop.
+    void armDismissalForTest()
+    {
+        m_deactivateArmed = true;
+    }
+
+    void setCursorPosForTest(const QPoint &globalPos)
+    {
+        m_cursorOverride = globalPos;
+    }
+
+    void deactivateForTest()
+    {
+        handleDeactivate();
+    }
+
     void showConfirmForTest(const QString &t, const QString &b)
     {
         showConfirm(t, b);
@@ -991,9 +1013,52 @@ public:
         raise();
         activateWindow();
         m_search->setFocus();
+        // Ignore deactivations for a moment: between show() and the compositor
+        // granting us focus there is a window where it can deactivate us again.
+        m_deactivateArmed = false;
+        QTimer::singleShot(250, this, [this] { m_deactivateArmed = true; });
     }
 
 protected:
+    // Is the pointer over our own panel? Used to tell "the user clicked on one
+    // of our rows" apart from "the user clicked somewhere else".
+    bool cursorInsidePanel() const
+    {
+        return frameGeometry().contains(effectiveCursorPos());
+    }
+
+    QPoint effectiveCursorPos() const
+    {
+        return m_cursorOverride.isNull() ? QCursor::pos() : m_cursorOverride;
+    }
+
+    bool event(QEvent *ev) override
+    {
+        // On Wayland a Tool window gets no pointer grab, so "clicked outside" is
+        // reported as the panel losing activation. But our own widgets can also
+        // deactivate us — a row click, the confirm card, a context menu opening.
+        // Those must NOT dismiss the panel: hiding on the press meant the row
+        // never saw its release, so itemClicked never fired and nothing pasted.
+        //
+        // So only treat it as an outside click when the pointer is genuinely
+        // off the panel and no popup of ours owns the interaction.
+        if (ev->type() == QEvent::WindowDeactivate && m_deactivateArmed) {
+            handleDeactivate();
+        }
+        return QWidget::event(ev);
+    }
+
+    void handleDeactivate()
+    {
+        if (cursorInsidePanel() || QApplication::activePopupWidget()
+            || (m_overlay && m_overlay->isVisible())) {
+            traceClick(QStringLiteral("deactivated inside panel -> ignore"));
+            return;
+        }
+        traceClick(QStringLiteral("deactivated outside -> hide"));
+        hide();
+    }
+
     void resizeEvent(QResizeEvent *ev) override
     {
         QWidget::resizeEvent(ev);
@@ -1378,6 +1443,8 @@ private:
     }
 
     QWidget *root = nullptr;
+    bool m_deactivateArmed = false;
+    QPoint m_cursorOverride;
     QTabBar *m_tabBar = nullptr;
     QStackedWidget *m_stack = nullptr;
     QListWidget *m_list = nullptr;
@@ -1677,6 +1744,40 @@ int runTests(Deck *deck)
         }
         QDir(tmpDir).removeRecursively();
     }
+
+    printf("\n== click-outside dismissal ==\n");
+    // Regression: the panel used to hide on ANY WindowDeactivate. Clicking a row
+    // deactivates us too (transient-parent churn / focus handover), so the hide
+    // fired on the press, the row never saw its release, itemClicked never ran
+    // and nothing was pasted. The pointer's position is the discriminator.
+    deck->showForTest();
+    deck->armDismissalForTest();
+    const QRect frame = deck->frameGeometry();
+
+    deck->setCursorPosForTest(frame.center());
+    deck->deactivateForTest();
+    check(deck->isVisible(), "deactivation with the pointer on the panel keeps it open (row clicks still paste)");
+
+    deck->setCursorPosForTest(frame.topLeft() + QPoint(2, 2));
+    deck->deactivateForTest();
+    check(deck->isVisible(), "deactivation with the pointer on a row keeps it open");
+
+    // Well clear of the panel: that is a genuine outside click.
+    deck->setCursorPosForTest(frame.bottomRight() + QPoint(400, 400));
+    deck->deactivateForTest();
+    check(!deck->isVisible(), "deactivation with the pointer off the panel dismisses it");
+
+    // The confirm card is part of our window: clicking Cancel/Clear on it is not
+    // an outside click either.
+    deck->showForTest();
+    deck->armDismissalForTest();
+    deck->setCursorPosForTest(frame.bottomRight() + QPoint(400, 400));
+    deck->showConfirmForTest(QStringLiteral("t"), QStringLiteral("b"));
+    deck->deactivateForTest();
+    check(deck->isVisible(), "an open confirm card is not dismissed by deactivation");
+    deck->hideConfirmForTest();
+    deck->setCursorPosForTest(QPoint());
+    deck->hide();
 
     printf("\n== confirm popup ==\n");
     // Regression: the panel widget was a constructor *local*, so the member
