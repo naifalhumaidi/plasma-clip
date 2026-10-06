@@ -693,11 +693,24 @@ public:
         m_newEntry->setVisible(false);
         lay->addWidget(m_newEntry);
 
+        // The status line floats OVER the list rather than sitting in the layout.
+        // As a layout row it resized the list every time it appeared, shifting
+        // every row down — so a fast second click after an action landed on a
+        // different row's body and pasted it instead of hitting the button
+        // again. Absolute positioning keeps the rows still, so the button under
+        // the pointer is still the button under the pointer.
         m_status = new QLabel(root);
-        m_status->setObjectName(QStringLiteral("count"));
+        m_status->setObjectName(QStringLiteral("statusmsg"));
         m_status->setVisible(false);
         m_status->setWordWrap(true);
-        lay->addWidget(m_status);
+        m_status->setAlignment(Qt::AlignCenter);
+        m_status->setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_status->setStyleSheet(QStringLiteral(R"(
+            #statusmsg { color: palette(placeholder-text);
+                     background: palette(window);
+                     border-top: 1px solid palette(mid);
+                     padding: 7px 10px; }
+        )"));
 
         connect(m_search, &QLineEdit::textChanged, this, [this] { rebuild(); });
         connect(m_newEntry, &QLineEdit::returnPressed, this, &Deck::commitNewEntry);
@@ -871,6 +884,21 @@ public:
     QWidget *rootWidget() const
     {
         return root;
+    }
+
+    void flashForTest(const QString &msg)
+    {
+        flash(msg);
+    }
+
+    bool statusVisibleForTest() const
+    {
+        return m_status && m_status->isVisible();
+    }
+
+    bool statusIsOverlayForTest() const
+    {
+        return m_status && m_status->testAttribute(Qt::WA_TransparentForMouseEvents);
     }
 
     // --- dismissal rule, under test ------------------------------------------
@@ -1087,6 +1115,20 @@ protected:
         if (m_overlay && m_overlay->isVisible()) {
             m_overlay->setGeometry(root->rect());
         }
+        positionStatus();
+    }
+
+    // Park the status line across the foot of the list. Sits on top of the rows
+    // rather than below them, so showing it never resizes the list.
+    void positionStatus()
+    {
+        if (!m_status || !m_stack) {
+            return;
+        }
+        const QRect listArea = m_stack->geometry();
+        const int h = m_status->sizeHint().height();
+        m_status->setGeometry(listArea.left(), listArea.bottom() - h + 1,
+                              listArea.width(), h);
     }
 
     void paintEvent(QPaintEvent *) override
@@ -1180,6 +1222,7 @@ private:
     void flash(const QString &msg)
     {
         m_status->setText(msg);
+        positionStatus();
         m_status->setVisible(true);
         QTimer::singleShot(2600, this, [this] { m_status->setVisible(false); });
     }
@@ -1813,6 +1856,31 @@ int runTests(Deck *deck)
     check(deck->isVisible(), "an open confirm card is not dismissed by deactivation");
     deck->hideConfirmForTest();
     deck->setCursorPosForTest(QPoint());
+    deck->hide();
+
+    printf("\n== status line must not move the list ==\n");
+    // Regression: the status line used to be a layout row, so showing it resized
+    // the list and shifted every row. A fast second click after an action then
+    // landed on a different row's body and pasted it, instead of hitting the
+    // button again. The rows must not move.
+    deck->showForTest();
+    QApplication::processEvents();
+    const QRect rowBefore = deck->rowRectFor(0);
+    const QRect starBefore = starButtonRect(rowBefore);
+    const QRect removeBefore = removeButtonRect(rowBefore);
+    const int listHBefore = deck->testList()->height();
+
+    deck->flashForTest(QStringLiteral("Entry deleted."));
+    QApplication::processEvents();
+
+    const QRect rowAfter = deck->rowRectFor(0);
+    check(rowAfter == rowBefore, "showing the status line does not move row 0");
+    check(starButtonRect(rowAfter) == starBefore, "the star button stays put when a message shows");
+    check(removeButtonRect(rowAfter) == removeBefore, "the remove button stays put when a message shows");
+    check(deck->testList()->height() == listHBefore, "the list is not resized by the status line");
+    // The message must be reachable but never eat clicks meant for the rows.
+    check(deck->statusVisibleForTest(), "the status message is shown");
+    check(deck->statusIsOverlayForTest(), "the status message is mouse-transparent so rows stay clickable");
     deck->hide();
 
     printf("\n== confirm popup ==\n");
