@@ -41,9 +41,21 @@ if ! command -v ydotool >/dev/null 2>&1; then
     echo "      sudo pacman -S ydotool        # Arch / CachyOS"
     echo "      sudo apt install ydotool       # Debian/Ubuntu"
 else
-    systemctl --user enable --now ydotool.service 2>/dev/null \
-        && echo "    ydotool.service enabled" \
-        || echo "    WARNING: could not enable ydotool.service (no systemd user session?)"
+    # `enable --now` reports success even when the daemon dies instantly: if
+    # /dev/uinput is not writable, ydotoold exits and systemd hits its start
+    # limit, leaving the unit "enabled" but dead. Verify it really answers.
+    systemctl --user enable ydotool.service 2>/dev/null || true
+    systemctl --user reset-failed ydotool.service 2>/dev/null || true
+    systemctl --user start ydotool.service 2>/dev/null || true
+    if ydotool key 0:0 2>/dev/null; then
+        echo "    ydotool.service running — click-to-paste will work"
+    else
+        echo "    WARNING: ydotoold is NOT working, so clicks will copy but not paste."
+        echo "      Check: systemctl --user status ydotool.service"
+        echo "      If it says 'failed to open uinput device', your user needs"
+        echo "      access to /dev/uinput, e.g.:"
+        echo "        sudo usermod -aG input $USER   (then log out and back in)"
+    fi
 fi
 
 echo "==> releasing Klipper's Meta+V binding"

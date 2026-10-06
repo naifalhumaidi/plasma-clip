@@ -189,9 +189,31 @@ QImage loadImage(const Entry &e)
     return QImage();
 }
 
+// Is the ydotool client binary installed at all?
 bool haveYdotool()
 {
     return !QStandardPaths::findExecutable(QStringLiteral("ydotool")).isEmpty();
+}
+
+// The ydotool binary existing is NOT enough. Injection goes through the
+// ydotoold daemon, and when that daemon cannot open /dev/uinput it dies and
+// systemd gives up ("Start request repeated too quickly"). Every ydotool call
+// then fails silently, so a click would close the panel and paste nothing —
+// which looks exactly like "clicking an item is broken".
+//
+// Ask the daemon instead of guessing: a successful no-op command proves both
+// the socket and the daemon are alive. Guessing socket paths is not reliable —
+// ydotoold listens on $XDG_RUNTIME_DIR/.ydotool_socket, and QStandardPaths
+// resolves that differently under the offscreen platform the tests run on.
+bool ydotoolReady()
+{
+    QProcess probe;
+    probe.start(QStringLiteral("ydotool"), {QStringLiteral("key"), QStringLiteral("0:0")});
+    if (!probe.waitForStarted(2000)) {
+        return false;
+    }
+    probe.waitForFinished(2000);
+    return probe.exitStatus() == QProcess::NormalExit && probe.exitCode() == 0;
 }
 
 QString flat(const QString &text, int maxChars)
@@ -1422,10 +1444,24 @@ private:
         const int delay = cfg.value(QStringLiteral("pasteDelayMs"), 200).toInt();
         const bool autoPaste = cfg.value(QStringLiteral("autoPaste"), true).toBool();
 
-        if (!autoPaste || !haveYdotool()) {
-            flash(autoPaste ? QStringLiteral("Copied. Install ydotool to enable click-to-paste.")
-                            : QStringLiteral("Copied (auto-paste off)."));
+        if (!autoPaste) {
+            flash(QStringLiteral("Copied (auto-paste off)."));
             QTimer::singleShot(1600, this, [this] { hide(); });
+            return;
+        }
+
+        // Distinguish "no ydotool at all" from "ydotoold is not running".
+        // The second case looks identical to a broken paste unless we say so.
+        if (!haveYdotool()) {
+            flash(QStringLiteral("Copied. Install ydotool to enable click-to-paste."));
+            QTimer::singleShot(1600, this, [this] { hide(); });
+            return;
+        }
+        if (!ydotoolReady()) {
+            traceClick(QStringLiteral("PASTE-BLOCKED ydotoold unavailable"));
+            flash(QStringLiteral("Copied, but ydotoold is not running - cannot paste.\n"
+                                 "Start it with: systemctl --user start ydotool"));
+            QTimer::singleShot(4000, this, [this] { hide(); });
             return;
         }
         hide();
@@ -1792,6 +1828,9 @@ int runTests(Deck *deck)
 
     printf("\n== environment ==\n");
     check(haveYdotool(), "ydotool present (required for click-to-paste)");
+    // The binary is installed but the daemon may be dead — that is the failure
+    // that made click-to-paste silently do nothing, so assert on it explicitly.
+    check(ydotoolReady(), "ydotoold reachable, so injection can actually work");
     check(QDBusInterface(QStringLiteral("org.kde.klipper"),
                          QStringLiteral("/klipper"),
                          QStringLiteral("org.kde.klipper.klipper"))
