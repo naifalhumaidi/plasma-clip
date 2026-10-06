@@ -80,6 +80,45 @@ q.addBindValue(uuid);
 
 This bug made every star click fail silently while the code looked perfect.
 
+### Reproduce the bug before you theorise about it
+
+Two bugs here were explained confidently and wrongly before being reproduced.
+The symptom was "clicking ✕ twice pastes an entry"; the plausible theory was
+that the button was not yet drawn because it appears on hover. The real cause
+was that Qt delivers the second press of a double-click as
+`MouseButtonDblClick`, not `MouseButtonPress`, so the hit-test ignored it.
+
+A synthesised double-click must send the same event types the real one does:
+
+```cpp
+QMouseEvent press(QEvent::MouseButtonPress, p, g, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+QMouseEvent dbl(QEvent::MouseButtonDblClick, p, g, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+```
+
+Two plain presses exercise a different path and hide the bug entirely.
+
+Then prove the fix: revert the one-line change and confirm the new test fails.
+A test that has never failed is not evidence.
+
+### Anything the OS can veto must be probed, not assumed
+
+The client binary being installed proves nothing: `ydotool` needs a running
+`ydotoold`, which dies on its own if it cannot open `/dev/uinput`. Assuming it
+works turned a dead daemon into "clicking an item is broken".
+
+```cpp
+// Bad: the binary exists, so paste "works".
+haveYdotool();
+
+// Good: the daemon answers.
+ydotoolReady(); // probes with a no-op key command, cached ~2s
+```
+
+Note the cache: probing in a click path stalls the UI, so never run a blocking
+process wait per click. Do not guess socket paths either —
+`QStandardPaths::RuntimeLocation` resolves differently under the offscreen
+platform the tests use, so a path check is wrong in exactly the place you test.
+
 ### Frameless always-on-top popups render dialogs behind themselves
 
 `Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint` will draw
@@ -99,6 +138,23 @@ Every other method then dereferences a null member. This caused a segfault in th
 confirm popup that a null-check regression test now guards.
 
 ## Design rules
+
+### Dismissal must never fire on the panel's own interaction
+
+A `Qt::Tool` window gets no pointer grab on Wayland, so "clicked outside" can
+only be inferred from losing activation. But the panel's own widgets deactivate
+it too — a row click, a context menu opening, the confirmation card. Hiding on
+any deactivation closes the panel on the mouse *press*, so the row never
+receives its release, `itemClicked` never fires, and the click pastes nothing.
+
+So a deactivation only means "outside" when the pointer is genuinely off the
+panel and no popup of ours owns the interaction. Keep that check in one place.
+
+### Never let a status message resize the list
+
+The status line used to be a layout row, so showing it shifted every row and a
+second click landed on a different entry. Transient UI floats over the content
+it reports on, and is `WA_TransparentForMouseEvents` so it cannot eat clicks.
 
 ### Painting and hit-testing must share one geometry function
 

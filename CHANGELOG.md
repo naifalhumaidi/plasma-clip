@@ -7,6 +7,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Click-to-paste: selecting an entry pastes it into the previously focused input.
+- Close by clicking outside the panel, without stealing the click.
 - Unlimited history: reads Klipper's SQLite database directly, so it is not
   bound by Klipper's in-memory cap.
 - Search box, pinned to the top of the popup.
@@ -21,13 +22,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **＋ New** — add an entry to the clipboard from an inline field.
 - **Clear** — remove every unstarred entry, with an in-window confirmation that
   reports both counts.
-- Headless `--test` suite (41 checks) and `--preview` / `--screenshot` renderers
+- Headless `--test` suite (53 checks) and `--preview` / `--screenshot` renderers
   for inspecting the UI without a display.
 - Opt-in click tracing via `CUSTOM_CLIPBOARD_DEBUG=1`.
+- A clear message when a click cannot paste because `ydotoold` is not running,
+  instead of closing silently.
 
 ### Changed
 - Popup restyled after the Windows 11 clipboard panel, themed with Plasma
   colours: 400px wide, rounded panel, 28px action buttons.
+- The status line floats over the list instead of sitting below it, so showing a
+  message no longer resizes the list and shifts the rows.
+
+### Fixed
+- Clicking a row no longer closes the panel without pasting when the click
+  deactivated the window. Dismissal on an outside click now checks that the
+  pointer is genuinely off the panel, and ignores deactivations caused by the
+  panel's own widgets, context menus and the confirmation card.
+- Double-clicking ✕ no longer pastes an entry. Qt delivers the second press of a
+  double-click as `MouseButtonDblClick`, which the button hit-test ignored, so
+  the click fell through to the list and pasted.
+- A click no longer reports success while silently doing nothing when `ydotoold`
+  has died. The daemon is now probed rather than assumed.
+- `install.sh` verifies `ydotoold` actually responds, since `enable --now`
+  reports success even when the daemon dies on startup.
 - Starred entries are no longer pinned to the top of the All tab; they sort
   normally and live in their own tab.
 - Removed Klipper's Meta+V binding so this app can own it; Klipper moves to

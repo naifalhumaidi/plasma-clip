@@ -64,8 +64,9 @@ States: `all`, `starred`, `search`, `alpha`, `new`, `hover`, `confirm`.
 QT_QPA_PLATFORM=offscreen ./custom-clipboard --test
 ```
 
-41 checks over the read path, sorting, search and tab filtering, the write path,
-the confirm popup, and the environment.
+53 checks over the read path, sorting, search and tab filtering, the write path,
+the confirm popup, outside-click dismissal, double-click handling and the
+environment.
 
 Principles the suite follows:
 
@@ -76,13 +77,20 @@ Principles the suite follows:
   `QApplication::sendEvent` straight to the widget. That exercises the same
   hit-testing a real click does without sending anything to the OS input layer.
   See [AGENTS.md](AGENTS.md) for why that matters.
+- **Synthetic events must match what the OS really sends.** Two plain
+  `MouseButtonPress` events are *not* a double-click; the real one arrives with
+  a `MouseButtonDblClick` second press. Synthesising the wrong sequence hid a
+  paste bug for two rounds of guessing.
 - **Fixtures, not live data.** Ordering tests use a fixed synthetic
   `QVector<Entry>`. An earlier version asserted against the user's real history
   and failed the moment every entry happened to be starred.
 - **Test the code path the UI uses.** The star bug survived because the test
   hand-wrote its own `UPDATE` while the app's setter was the broken one.
+- **A new test must be shown to fail.** Revert the fix and watch it go red, or
+  it is not evidence of anything.
 - **Row-body clicks are asserted not to** star or delete, but are never actually
-  triggered, because that path ends in a ydotool injection.
+  triggered, because that path ends in a ydotool injection. The paste path is
+  asserted with a counter on `choose()` rather than by letting it run.
 
 ## Architecture
 
@@ -111,6 +119,30 @@ outermost (10px from the row edge); `star` sits 4px inboard of it.
 The delegate's `sizeHint` returns **no width** on purpose. Returning a fixed
 width makes item rects wider than the viewport, which decouples where rows are
 painted from where clicks are measured — that bug cost real debugging time.
+
+Hit-testing must also accept `MouseButtonDblClick` as well as
+`MouseButtonPress`. Qt sends the second press of a double-click as a DblClick
+event; a filter that watches only Press lets it fall through to the list, which
+then emits `itemClicked` and pastes.
+
+### Closing on an outside click
+
+The panel is a `Qt::Tool` window, deliberately **not** `Qt::Popup`. A popup
+needs a live transient parent, and anchoring one to the focused window made the
+panel fail to appear at all — do not retry that without a way to test it.
+
+Wayland gives a Tool window no pointer grab, so there is no "clicked outside"
+event to receive. The panel infers it from `WindowDeactivate`, which is
+ambiguous: the panel's own widgets deactivate it too. `handleDeactivate()`
+therefore only dismisses when the pointer is off the panel and no popup of ours
+owns the interaction, and it is the single place that rule lives.
+
+### Pasting
+
+`choose()` copies the entry through Klipper's D-Bus API, hides the panel, waits
+`pasteDelayMs`, then has `ydotool` press Ctrl+V into whatever now has focus.
+
+The daemon is probed before that, not assumed — see `ydotoolReady()`.
 
 ## Click tracing
 

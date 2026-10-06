@@ -60,11 +60,15 @@ ydotool key 29:1 29:0                        # expect: silent, exit 0
 | Action | How |
 |---|---|
 | Open / close | **Meta+V** |
+| Close by clicking elsewhere | click outside the panel |
 | Paste an item | click it, or select + `Enter` |
 | Search | type in the search box |
 | Switch tab | **All** / **Starred** |
 | Star an item | hover the row → **★** (left button) |
 | Delete an item | hover the row → **✕** (right button), or right-click → Delete |
+
+The ★ and ✕ buttons are click targets whether or not they are currently drawn,
+so a fast click still hits them.
 | Copy without pasting | right-click → Copy only |
 | Add an entry | **＋ New**, type, `Enter` |
 | Clear unstarred entries | **Clear**, then confirm in the popup |
@@ -152,11 +156,21 @@ stale grab lives in `plasmashell`'s memory and only clears on restart.
 `systemctl --user is-active ydotool.service`. If it is active, raise
 `pasteDelayMs`.
 
+**"Copied, but ydotoold is not running".** The `ydotool` client is installed but
+its background daemon is dead, so nothing can be typed for you. Start it with
+`systemctl --user start ydotool.service`. If it will not stay up, the journal
+will say `failed to open uinput device`, which means your user cannot write to
+`/dev/uinput` — see the note in `install.sh`.
+
 **Pasting goes to the wrong window.** Wayland decides focus; add a little more
 `pasteDelayMs`.
 
 **Nothing happens when I click a row.** You may be clicking the action buttons
-that appear on hover — ★ and ✕ are on the right of each row.
+on the right of the row — ★ and ✕.
+
+**Clicking ✕ twice pastes an entry instead.** Should be fixed; if you see it,
+please report it. A double-click's second press arrives as a distinct event
+type, and the button hit-test has to handle it.
 
 **Clear says "Nothing to clear".** Every entry is starred, and Clear spares
 starred entries by design. Unstar some first.

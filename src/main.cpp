@@ -95,6 +95,15 @@ void traceClick(const QString &line)
 
 enum SortMode { Newest, Oldest, AlphaAsc, AlphaDesc };
 
+// The real Klipper database, ignoring CUSTOM_CLIPBOARD_DATA. The suite must be
+// able to name the user's actual file even while sandboxed, otherwise its
+// "real database untouched" assertion would compare the sandbox against itself.
+QString realKlipperDbPath()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+        + QStringLiteral("/klipper/history3.sqlite");
+}
+
 QString klipperDir()
 {
     // Overridable so --test can exercise the write paths against a throwaway
@@ -123,6 +132,29 @@ struct Entry {
     bool starred = false;
     bool isImage = false;
 };
+
+// Counts rows in a database at an explicit path, ignoring CUSTOM_CLIPBOARD_DATA.
+// Used by the suite to assert the user's real history is never modified, which
+// cannot be checked through the sandboxed readHistory().
+int readRealHistorySize(const QString &dbPath)
+{
+    if (!QFile::exists(dbPath)) {
+        return -1;
+    }
+    QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("ccreal"));
+    db.setDatabaseName(dbPath);
+    db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+    if (!db.open()) {
+        QSqlDatabase::removeDatabase(QStringLiteral("ccreal"));
+        return -1;
+    }
+    QSqlQuery q(db);
+    q.exec(QStringLiteral("PRAGMA busy_timeout=2000"));
+    const int n = q.exec(QStringLiteral("SELECT COUNT(*) FROM main")) && q.next() ? q.value(0).toInt() : -1;
+    db.close();
+    QSqlDatabase::removeDatabase(QStringLiteral("ccreal"));
+    return n;
+}
 
 QVector<Entry> readHistory()
 {
@@ -207,13 +239,27 @@ bool haveYdotool()
 // resolves that differently under the offscreen platform the tests run on.
 bool ydotoolReady()
 {
+    // Cache the verdict: this runs in the click path, and spawning a process and
+    // waiting on it there would stall the UI for the length of the probe. A dead
+    // daemon is also the common case worth avoiding, since every click would
+    // otherwise pay for a failing probe.
+    static bool cached = false;
+    static qint64 probedAt = 0;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (probedAt != 0 && now - probedAt < 2000) {
+        return cached;
+    }
+
     QProcess probe;
     probe.start(QStringLiteral("ydotool"), {QStringLiteral("key"), QStringLiteral("0:0")});
     if (!probe.waitForStarted(2000)) {
-        return false;
+        cached = false;
+    } else {
+        probe.waitForFinished(2000);
+        cached = probe.exitStatus() == QProcess::NormalExit && probe.exitCode() == 0;
     }
-    probe.waitForFinished(2000);
-    return probe.exitStatus() == QProcess::NormalExit && probe.exitCode() == 0;
+    probedAt = now;
+    return cached;
 }
 
 QString flat(const QString &text, int maxChars)
@@ -911,61 +957,32 @@ static int doubleClickAt(QWidget *target, const QPoint &pos)
     // Reproduce the reported double-click on the remove button: press, release,
 // then press again at the same spot with no hover in between (exactly what a
 // fast double-click delivers).
-QString doubleClickRemoveForTest(int row)
+struct DoubleClickResult {
+        int removed = 0;
+        bool pasted = false;
+    };
+
+    // Replays the reported failure: click the X twice quickly and report what the
+    // panel actually did. A real double-click's second press arrives as
+    // MouseButtonDblClick, which synthesising two plain presses would not exercise.
+    DoubleClickResult doubleClickRemoveForTest(int row)
     {
-        QString printfLiteral;
-        const QRect r = rowRectFor(row);
-        const QPoint p = removeButtonRect(r).center();
-        m_chooseCount = 0;
+        DoubleClickResult result;
+        const QPoint p = removeButtonRect(rowRectFor(row)).center();
         QWidget *vp = testList()->viewport();
-        const QString target = uuidAtRow(row);
         const int countBefore = m_list->count();
+        m_chooseCount = 0;
 
         Deck::clickAt(vp, p); // first click
         QApplication::processEvents();
 
-        // No hover move, no mouse move: straight to a second press/release,
-        // delivered as a genuine double-click (second press = DblClick event).
-        const int dbl = Deck::doubleClickAt(vp, p);
-        printfLiteral = QStringLiteral("dblAccepted=%1 ").arg(dbl);
+        // No hover or motion in between: straight to a second press/release.
+        Deck::doubleClickAt(vp, p);
         QApplication::processEvents();
-        const bool pasted = m_chooseCount > 0;
-        printfLiteral += QStringLiteral("PASTED=%1 ").arg(pasted);
 
-        QString stillThere = QStringLiteral("gone");
-        for (const Entry &e : m_store.entries) {
-            if (e.uuid == target) {
-                stillThere = QStringLiteral("STILL PRESENT");
-            }
-        }
-        return printfLiteral + QStringLiteral("row=%1 removed=%2/%3 %4")
-            .arg(row)
-            .arg(countBefore - m_list->count())
-            .arg(countBefore)
-            .arg(stillThere);
-    }
-
-    // What does the hit-test think is under a viewport point on this row?
-    QString classifyForTest(int row, const QPoint &p)
-    {
-        const QRect r = rowRectFor(row);
-        if (removeButtonRect(r).contains(p)) {
-            return QStringLiteral("remove");
-        }
-        if (starButtonRect(r).contains(p)) {
-            return QStringLiteral("star");
-        }
-        return QStringLiteral("rowbody");
-    }
-
-    QPoint removeCenterForTest(int row)
-    {
-        return removeButtonRect(rowRectFor(row)).center();
-    }
-
-    bool visibleForTest() const
-    {
-        return isVisible();
+        result.removed = countBefore - m_list->count();
+        result.pasted = m_chooseCount > 0;
+        return result;
     }
 
     int chooseCountForTest() const
@@ -1650,14 +1667,63 @@ private:
 int runTests(Deck *deck)
 {
     int failures = 0;
+    int total = 0;
     auto check = [&](bool ok, const QString &what) {
         printf("  %-52s %s\n", qPrintable(what), ok ? "PASS" : "FAIL");
+        ++total;
         if (!ok) {
             ++failures;
         }
     };
 
+    // Redirect the data directory for the WHOLE suite before anything reads it.
+//
+// This used to be scoped to the write-path block alone, which was a trap: every
+// check after that block ran against the user's real Klipper database. The
+// double-click regression test clicks the real ✕ button, so it deleted genuine
+// clipboard entries on each run. Anything that can delete must be sandboxed for
+// the entire suite, not just the part that was known to be destructive.
+const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("custom-clipboard-test"));
+    // Resolve the REAL database path BEFORE redirecting, or the "real" path
+    // would silently become the sandbox and every seeding check would compare
+    // the sandbox against itself.
+    const QString realDbPath = realKlipperDbPath();
+    QDir(tmpDir).removeRecursively();
+    QDir().mkpath(tmpDir);
+    qputenv("CUSTOM_CLIPBOARD_DATA", tmpDir.toLocal8Bit());
+
+    // Verify the redirect took effect before running anything destructive. A
+    // suite that can silently fall back to the real database is worse than no
+    // suite at all, so refuse to continue rather than run unguarded.
+    if (klipperDir() == realDbPath || !klipperDir().contains(tmpDir)) {
+        fprintf(stderr, "FATAL: sandbox not active (klipperDir=%s, real=%s).\n"
+                        "       Refusing to run: an unsandboxed suite would DELETE the\n"
+                        "       real clipboard history.\n",
+                qPrintable(klipperDir()), qPrintable(realDbPath));
+        return 2;
+    }
+
     printf("\n== read path ==\n");
+    const int realCountAtStart = readRealHistorySize(realDbPath);
+    check(realCountAtStart >= 0, "real history database is readable");
+    check(realCountAtStart > 0,
+          "real history is not empty (an empty clipboard makes every read/write check vacuous)");
+    // Re-seedable, because the write-path checks deliberately empty the sandbox.
+    auto seedSandbox = [&] {
+        for (const QString &f : QDir(tmpDir).entryList(QDir::Files)) {
+            QFile::remove(tmpDir + QLatin1Char('/') + f);
+        }
+        // Deliberately NOT copying -shm: a stale shared-memory index alongside a
+        // copied WAL makes readers see the wrong snapshot.
+        for (const QString &suffix : {QStringLiteral(""), QStringLiteral("-wal")}) {
+            const QString s = realDbPath + suffix;
+            if (QFile::exists(s)) {
+                QFile::copy(s, tmpDir + QStringLiteral("/history3.sqlite") + suffix);
+            }
+        }
+    };
+    seedSandbox();
+    check(readHistory().size() == realCountAtStart, "sandbox seeded from the real database");
     QVector<Entry> base = readHistory();
     check(!base.isEmpty(), "history reads non-empty from SQLite");
     int starred = 0, images = 0;
@@ -1748,27 +1814,11 @@ int runTests(Deck *deck)
         }
     }
 
-    printf("\n== write path (on a COPY of the database) ==\n");
-    const QString realDir = klipperDir();
-    const QString tmpDir = QDir::tempPath() + QStringLiteral("/cc-selftest-XXXXXX");
-    if (!QDir().mkpath(tmpDir + QStringLiteral("/data"))) {
-        check(false, "could not create temp dir");
-    } else {
-        bool copied = true;
-        // Deliberately NOT copying -shm: a stale shared-memory index alongside a
-        // copied WAL makes readers see the wrong snapshot.
-        for (const QString &suffix : {QStringLiteral(""), QStringLiteral("-wal")}) {
-            const QString s = realDir + QStringLiteral("/history3.sqlite") + suffix;
-            if (QFile::exists(s)) {
-                copied = QFile::copy(s, tmpDir + QStringLiteral("/history3.sqlite") + suffix) && copied;
-            }
-        }
-        check(copied, "history database copied to a sandbox");
-
-        if (copied) {
-            qputenv("CUSTOM_CLIPBOARD_DATA", tmpDir.toLocal8Bit());
-            const QVector<Entry> sandboxed = readHistory();
-            check(sandboxed.size() == base.size(), "sandbox reads the same entry count");
+    printf("\n== write path (sandboxed) ==\n");
+    // Already sandboxed for the whole suite; nothing below may touch the real DB.
+    {
+        const QVector<Entry> sandboxed = readHistory();
+        check(sandboxed.size() == base.size(), "sandbox reads the same entry count");
 
             // Star / unstar through the same code path the UI uses.
             int target = -1;
@@ -1917,12 +1967,14 @@ int runTests(Deck *deck)
             check(unstarredAfter == 0, "no unstarred entries survive a clear");
             check(starredAfter == starredBefore, "clear keeps every starred entry");
             check(deck->clearUnstarred() == 0, "clearing an already-clear list is a no-op");
-
-            qunsetenv("CUSTOM_CLIPBOARD_DATA");
-            check(readHistory().size() == base.size(), "real database untouched by the tests");
-        }
-        QDir(tmpDir).removeRecursively();
     }
+
+    // The one check that must see past the sandbox. Asserted against the real
+    // file directly, since readHistory() would only ever report the sandbox.
+    qunsetenv("CUSTOM_CLIPBOARD_DATA");
+    check(readRealHistorySize(realDbPath) == realCountAtStart,
+          "real database untouched by the tests");
+    qputenv("CUSTOM_CLIPBOARD_DATA", tmpDir.toLocal8Bit());
 
     printf("\n== click-outside dismissal ==\n");
     // Regression: the panel used to hide on ANY WindowDeactivate. Clicking a row
@@ -1989,15 +2041,17 @@ int runTests(Deck *deck)
     // button hit-test ignored, so it fell through to the list and pasted.
     // doubleClickRemoveForTest() replays that exact sequence.
     {
+        // The write-path checks above clear the sandbox, so re-seed before
+        // clicking anything.
+        seedSandbox();
         deck->reload();
         deck->showForTest();
         const int r = 0;
-        const QString report = deck->doubleClickRemoveForTest(r);
-        check(!report.contains(QStringLiteral("PASTED=1")),
-              "double-clicking the X button never pastes an entry");
-        check(report.contains(QStringLiteral("PASTED=0")),
-              "the second click of a double-click is consumed by the button, not the list");
+        const Deck::DoubleClickResult report = deck->doubleClickRemoveForTest(r);
+        check(!report.pasted, "double-clicking the X button never pastes an entry");
+        check(report.removed >= 1, "the first click of a double-click still deletes");
         // A double-click on the row *body* is still a normal paste.
+        seedSandbox();
         deck->reload();
         deck->showForTest();
         deck->resetChooseCountForTest();
@@ -2029,7 +2083,11 @@ int runTests(Deck *deck)
               .isValid(),
           "Klipper reachable on D-Bus");
 
-    printf("\n%s  (%d failure%s)\n\n", failures ? "FAILURES" : "ALL TESTS PASSED", failures, failures == 1 ? "" : "s");
+    // Report the total rather than letting the docs quote a number. Some checks are
+// conditional on fixture state, so the count legitimately varies.
+    printf("\n%s  (%d/%d checks, %d failure%s)\n\n",
+           failures ? "FAILURES" : "ALL TESTS PASSED",
+           total - failures, total, failures, failures == 1 ? "" : "s");
     return failures == 0 ? 0 : 1;
 }
 
