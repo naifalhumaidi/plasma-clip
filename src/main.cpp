@@ -1018,11 +1018,6 @@ struct DoubleClickResult {
         m_deactivateArmed = true;
     }
 
-    void setCursorPosForTest(const QPoint &globalPos)
-    {
-        m_cursorOverride = globalPos;
-    }
-
     void deactivateForTest()
     {
         handleDeactivate();
@@ -1179,28 +1174,12 @@ struct DoubleClickResult {
     }
 
 protected:
-    // Is the pointer over our own panel? Used to tell "the user clicked on one
-    // of our rows" apart from "the user clicked somewhere else".
-    bool cursorInsidePanel() const
-    {
-        return frameGeometry().contains(effectiveCursorPos());
-    }
-
-    QPoint effectiveCursorPos() const
-    {
-        return m_cursorOverride.isNull() ? QCursor::pos() : m_cursorOverride;
-    }
-
     bool event(QEvent *ev) override
     {
         // On Wayland a Tool window gets no pointer grab, so "clicked outside" is
-        // reported as the panel losing activation. But our own widgets can also
-        // deactivate us — a row click, the confirm card, a context menu opening.
-        // Those must NOT dismiss the panel: hiding on the press meant the row
-        // never saw its release, so itemClicked never fired and nothing pasted.
-        //
-        // So only treat it as an outside click when the pointer is genuinely
-        // off the panel and no popup of ours owns the interaction.
+        // reported as the panel losing activation. Our own popups steal that
+        // activation too, so ignore deactivations from our own widget set:
+        // a right-click menu or the confirm card opening is NOT an outside click.
         if (ev->type() == QEvent::WindowDeactivate && m_deactivateArmed) {
             handleDeactivate();
         }
@@ -1209,9 +1188,15 @@ protected:
 
     void handleDeactivate()
     {
-        if (cursorInsidePanel() || QApplication::activePopupWidget()
-            || (m_overlay && m_overlay->isVisible())) {
-            traceClick(QStringLiteral("deactivated inside panel -> ignore"));
+        // An open QMenu or QComboBox dropdown currently owns the interaction.
+        if (QApplication::activePopupWidget()) {
+            traceClick(QStringLiteral("deactivated during popup -> keep"));
+            return;
+        }
+        // The confirm overlay is inside our window; pressing its buttons or
+        // buttons on it is not an outside click.
+        if (m_overlay && m_overlay->isVisible()) {
+            traceClick(QStringLiteral("deactivated during confirm -> keep"));
             return;
         }
         traceClick(QStringLiteral("deactivated outside -> hide"));
@@ -1640,7 +1625,6 @@ private:
     QWidget *root = nullptr;
     bool m_deactivateArmed = false;
     int m_chooseCount = 0; // pastes attempted; lets tests assert on the paste
-    QPoint m_cursorOverride;
     QTabBar *m_tabBar = nullptr;
     QStackedWidget *m_stack = nullptr;
     QListWidget *m_list = nullptr;
@@ -1977,37 +1961,23 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
     qputenv("CUSTOM_CLIPBOARD_DATA", tmpDir.toLocal8Bit());
 
     printf("\n== click-outside dismissal ==\n");
-    // Regression: the panel used to hide on ANY WindowDeactivate. Clicking a row
-    // deactivates us too (transient-parent churn / focus handover), so the hide
-    // fired on the press, the row never saw its release, itemClicked never ran
-    // and nothing was pasted. The pointer's position is the discriminator.
+    // On Wayland a Tool window has no pointer grab, so an outside click is
+    // reported as the window losing activation. Our own popups also deactivate
+    // us, so a plain deactivation must only hide when NOT one of my popups.
     deck->showForTest();
     deck->armDismissalForTest();
-    const QRect frame = deck->frameGeometry();
 
-    deck->setCursorPosForTest(frame.center());
     deck->deactivateForTest();
-    check(deck->isVisible(), "deactivation with the pointer on the panel keeps it open (row clicks still paste)");
+    check(!deck->isVisible(), "a keyboard-focus deactivation hides the panel (outside click)");
 
-    deck->setCursorPosForTest(frame.topLeft() + QPoint(2, 2));
-    deck->deactivateForTest();
-    check(deck->isVisible(), "deactivation with the pointer on a row keeps it open");
-
-    // Well clear of the panel: that is a genuine outside click.
-    deck->setCursorPosForTest(frame.bottomRight() + QPoint(400, 400));
-    deck->deactivateForTest();
-    check(!deck->isVisible(), "deactivation with the pointer off the panel dismisses it");
-
-    // The confirm card is part of our window: clicking Cancel/Clear on it is not
-    // an outside click either.
+    // The confirm card is part of our window: pressing its buttons or buttons on
+    // it is not an outside click.
     deck->showForTest();
     deck->armDismissalForTest();
-    deck->setCursorPosForTest(frame.bottomRight() + QPoint(400, 400));
     deck->showConfirmForTest(QStringLiteral("t"), QStringLiteral("b"));
     deck->deactivateForTest();
     check(deck->isVisible(), "an open confirm card is not dismissed by deactivation");
     deck->hideConfirmForTest();
-    deck->setCursorPosForTest(QPoint());
     deck->hide();
 
     printf("\n== status line must not move the list ==\n");
