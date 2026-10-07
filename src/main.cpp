@@ -59,6 +59,7 @@
 #include <kglobalaccel.h>
 
 #include <algorithm>
+#include <functional>
 
 namespace
 {
@@ -1023,6 +1024,14 @@ struct DoubleClickResult {
         handleDeactivate();
     }
 
+    // The intended-visibility state machine toggle() decides on. Offscreen
+    // platforms hide synchronously, so isVisible() cannot reproduce the
+    // Wayland race; asserting on the intent is what pins the fix.
+    bool intendsVisibleForTest() const
+    {
+        return m_wantVisible;
+    }
+
     void showConfirmForTest(const QString &t, const QString &b)
     {
         showConfirm(t, b);
@@ -1148,7 +1157,15 @@ struct DoubleClickResult {
 
     void toggle()
     {
-        if (isVisible()) {
+        traceClick(QStringLiteral("TOGGLE wantVisible=%1 isVisible=%2")
+                       .arg(m_wantVisible)
+                       .arg(isVisible()));
+        // Decide on intent, not isVisible(): on Wayland a top-level
+        // hide() settles asynchronously, so right after an outside-click
+        // exit isVisible() can still report true. Trusting it here made
+        // the next Meta+V "hide" the already-hidden panel instead of
+        // reopening it — the reported "cannot open for a while".
+        if (m_wantVisible) {
             hide();
             return;
         }
@@ -1167,10 +1184,23 @@ struct DoubleClickResult {
         raise();
         activateWindow();
         m_search->setFocus();
-        // Ignore deactivations for a moment: between show() and the compositor
-        // granting us focus there is a window where it can deactivate us again.
-        m_deactivateArmed = false;
-        QTimer::singleShot(250, this, [this] { m_deactivateArmed = true; });
+        // Dismissal arms on the WindowActivate event (see event()),
+        // so there is deliberately no timer here: until the compositor
+        // has actually granted focus, a deactivation is not an outside
+        // click and must not hide the freshly opened panel.
+    }
+
+    // Our own record of what we asked the window manager for. isVisible()
+    // is Qt's view of the world and can lag on Wayland; the intent flag
+    // never does, so show/hide decisions (toggle()) stay deterministic.
+    void setVisible(bool visible) override
+    {
+        m_wantVisible = visible;
+        if (!visible) {
+            // Our own hide must never be mistaken for an outside click.
+            m_deactivateArmed = false;
+        }
+        QWidget::setVisible(visible);
     }
 
 protected:
@@ -1180,7 +1210,14 @@ protected:
         // reported as the panel losing activation. Our own popups steal that
         // activation too, so ignore deactivations from our own widget set:
         // a right-click menu or the confirm card opening is NOT an outside click.
-        if (ev->type() == QEvent::WindowDeactivate && m_deactivateArmed) {
+        if (ev->type() == QEvent::WindowActivate) {
+            // The compositor has actually granted us focus: from here on,
+            // losing activation means the user clicked somewhere else.
+            // Arming here — not on a timer after show() — means a stray
+            // deactivation delivered while the panel is still settling
+            // can never re-hide it right after it opened.
+            m_deactivateArmed = true;
+        } else if (ev->type() == QEvent::WindowDeactivate && m_deactivateArmed) {
             handleDeactivate();
         }
         return QWidget::event(ev);
@@ -1624,6 +1661,7 @@ private:
 
     QWidget *root = nullptr;
     bool m_deactivateArmed = false;
+    bool m_wantVisible = false; // intended visibility, see setVisible()
     int m_chooseCount = 0; // pastes attempted; lets tests assert on the paste
     QTabBar *m_tabBar = nullptr;
     QStackedWidget *m_stack = nullptr;
@@ -1676,6 +1714,21 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
     QDir().mkpath(tmpDir);
     qputenv("CUSTOM_CLIPBOARD_DATA", tmpDir.toLocal8Bit());
 
+    bool dataSeeded = false;
+    std::function<void(const QString &, const QString &)> copyTree =
+        [&copyTree](const QString &from, const QString &to) {
+            QDir().mkpath(to);
+            QDir d(from);
+            for (const QString &name : d.entryList(QDir::Files)) {
+                QFile::copy(from + QLatin1Char('/') + name,
+                            to + QLatin1Char('/') + name);
+            }
+            for (const QString &name : d.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+                copyTree(from + QLatin1Char('/') + name,
+                         to + QLatin1Char('/') + name);
+            }
+        };
+
     // Verify the redirect took effect before running anything destructive. A
     // suite that can silently fall back to the real database is worse than no
     // suite at all, so refuse to continue rather than run unguarded.
@@ -1703,6 +1756,17 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
             const QString s = realDbPath + suffix;
             if (QFile::exists(s)) {
                 QFile::copy(s, tmpDir + QStringLiteral("/history3.sqlite") + suffix);
+            }
+        }
+        // Image payloads live beside the database in data/. Without them the
+        // "image payloads resolve to thumbnails" check cannot resolve anything
+        // once the real history contains images. Copied once: the wipe above
+        // only removes top-level files, so the blob tree survives re-seeds.
+        if (!dataSeeded) {
+            const QString src = QFileInfo(realDbPath).path() + QStringLiteral("/data");
+            if (QDir(src).exists()) {
+                copyTree(src, tmpDir + QStringLiteral("/data"));
+                dataSeeded = true;
             }
         }
     };
@@ -1969,6 +2033,19 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
 
     deck->deactivateForTest();
     check(!deck->isVisible(), "a keyboard-focus deactivation hides the panel (outside click)");
+
+    // Regression: after an outside-click exit, Meta+V must reopen the
+    // panel immediately. toggle() used to decide on isVisible(), which
+    // can lag behind an asynchronous Wayland hide(), so the first press
+    // "hid" the already-hidden panel again ("cannot open for a while").
+    check(!deck->intendsVisibleForTest(), "an outside-click exit records a hidden intent");
+    deck->toggle();
+    check(deck->intendsVisibleForTest() && deck->isVisible(),
+          "Meta+V reopens the panel immediately after an outside-click exit");
+    deck->toggle();
+    check(!deck->intendsVisibleForTest() && !deck->isVisible(),
+          "a second Meta+V hides it again");
+    deck->hide();
 
     // The confirm card is part of our window: pressing its buttons or buttons on
     // it is not an outside click.
