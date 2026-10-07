@@ -96,6 +96,11 @@ void traceClick(const QString &line)
 
 enum SortMode { Newest, Oldest, AlphaAsc, AlphaDesc };
 
+// Which list a tab shows. Deliberately an enum, not a bool: the
+// panel has All / Starred / Not starred tabs, and a bool can only
+// express two of them.
+enum TabFilter { AllEntries, StarredOnly, UnstarredOnly };
+
 // The real Klipper database, ignoring CUSTOM_CLIPBOARD_DATA. The suite must be
 // able to name the user's actual file even while sandboxed, otherwise its
 // "real database untouched" assertion would compare the sandbox against itself.
@@ -384,13 +389,16 @@ void sortEntries(QVector<Entry> &v, SortMode mode)
     }
 }
 
-// Returns the indexes of entries matching the search text / starred filter.
-QVector<int> filterRows(const QVector<Entry> &v, const QString &needle, bool starredOnly)
+// Returns the indexes of entries matching the search text / tab filter.
+QVector<int> filterRows(const QVector<Entry> &v, const QString &needle, TabFilter filter)
 {
     QVector<int> rows;
     for (int i = 0; i < v.size(); ++i) {
         const Entry &e = v.at(i);
-        if (starredOnly && !e.starred) {
+        if (filter == StarredOnly && !e.starred) {
+            continue;
+        }
+        if (filter == UnstarredOnly && e.starred) {
             continue;
         }
         if (!needle.isEmpty() && !e.text.contains(needle, Qt::CaseInsensitive)) {
@@ -713,7 +721,11 @@ public:
         m_tabBar->setDrawBase(false);
         m_tabBar->addTab(QStringLiteral("All"));
         m_tabBar->addTab(QStringLiteral("Starred"));
-        m_tabBar->setTabVisible(1, false); // only shown when something is starred
+        m_tabBar->addTab(QStringLiteral("Not starred"));
+        // Tabs appear only when they would show something, so the
+        // bar never offers an empty list to click.
+        m_tabBar->setTabVisible(1, false);
+        m_tabBar->setTabVisible(2, false);
         bar->addWidget(m_tabBar);
         bar->addStretch(1);
         m_sort = new QComboBox(root);
@@ -727,10 +739,12 @@ public:
 
         m_list = makeList();
         m_starList = makeList();
+        m_notList = makeList();
         m_stack = new QStackedWidget(root);
         m_stack->setFrameShape(QFrame::NoFrame);
         m_stack->addWidget(m_list);
         m_stack->addWidget(m_starList);
+        m_stack->addWidget(m_notList);
         lay->addWidget(m_stack, 1);
 
         // Inline "new entry" field — a modal dialog would open behind this
@@ -774,7 +788,7 @@ public:
             setHoverRow(-1);
         });
 
-        for (QListWidget *lw : {m_list, m_starList}) {
+        for (QListWidget *lw : {m_list, m_starList, m_notList}) {
             connect(lw, &QListWidget::itemActivated, this, [this, lw](QListWidgetItem *it) { choose(lw, it); });
             connect(lw, &QListWidget::itemClicked, this, [this, lw](QListWidgetItem *it) { choose(lw, it); });
             connect(lw, &QListWidget::customContextMenuRequested, this, &Deck::contextMenu);
@@ -785,6 +799,7 @@ public:
         m_delegate->setParent(this);
         m_list->setItemDelegate(m_delegate);
         m_starList->setItemDelegate(m_delegate);
+        m_notList->setItemDelegate(m_delegate);
 
         auto *esc = new QShortcut(QKeySequence(Qt::Key_Escape), this);
         esc->setContext(Qt::WindowShortcut);
@@ -810,6 +825,9 @@ public:
         } else if (state == QLatin1String("starred")) {
             m_tabBar->setCurrentIndex(1);
             m_stack->setCurrentIndex(1);
+        } else if (state == QLatin1String("notstarred")) {
+            m_tabBar->setCurrentIndex(2);
+            m_stack->setCurrentIndex(2);
         } else if (state == QLatin1String("new")) {
             m_newEntry->setText(QStringLiteral("a freshly added entry"));
             m_newEntry->setVisible(true);
@@ -1049,6 +1067,39 @@ struct DoubleClickResult {
         }
     }
 
+    // Tab bar state, so the suite can assert which tabs exist and
+    // which are offered to the user.
+    int tabCountForTest() const
+    {
+        return m_tabBar ? m_tabBar->count() : -1;
+    }
+
+    bool tabVisibleForTest(int index) const
+    {
+        return m_tabBar && m_tabBar->isTabVisible(index);
+    }
+
+    int currentTabForTest() const
+    {
+        return m_tabBar ? m_tabBar->currentIndex() : -1;
+    }
+
+    // Switch tabs the way a user would, so the stack follows.
+    void selectTabForTest(int index)
+    {
+        m_tabBar->setCurrentIndex(index);
+    }
+
+    int currentStackForTest() const
+    {
+        return m_stack ? m_stack->currentIndex() : -1;
+    }
+
+    QString clearButtonTextForTest() const
+    {
+        return m_clearBtn ? m_clearBtn->text() : QString();
+    }
+
     int starredCount() const
     {
         int n = 0;
@@ -1058,9 +1109,13 @@ struct DoubleClickResult {
         return n;
     }
 
-    void selectFirstOf(int listIndex)
-    {
-        QListWidget *lw = listIndex == 1 ? m_starList : m_list;
+    void selectFirstOf(int listIndex)    {
+        QListWidget *lw = nullptr;
+        switch (listIndex) {
+        case 1: lw = m_starList; break;
+        case 2: lw = m_notList; break;
+        default: lw = m_list; break;
+        }
         if (lw->count()) {
             lw->setCurrentRow(0);
         }
@@ -1287,6 +1342,19 @@ private:
         return lw;
     }
 
+    // The list belonging to the tab the user is looking at.
+    // Several handlers need it; deriving it from the stack
+    // index in each place would drift the moment a tab is
+    // added, so it lives here.
+    QListWidget *currentList() const
+    {
+        switch (m_stack->currentIndex()) {
+        case 1: return m_starList;
+        case 2: return m_notList;
+        default: return m_list;
+        }
+    }
+
     void applySort()
     {
         sortEntries(m_store.entries, m_sortMode);
@@ -1296,25 +1364,35 @@ private:
     {
         const QString needle = m_search->text().trimmed();
         int stars = 0;
-        for (QListWidget *lw : {m_list, m_starList}) {
-            const bool starredOnly = (lw == m_starList);
-            const int keep = lw->currentRow();
-            lw->clear();
-            const QVector<int> rows = filterRows(m_store.entries, needle, starredOnly);
+        int unstarred = 0;
+        struct Tab {
+            QListWidget *list;
+            TabFilter filter;
+        };
+        for (const Tab &t : {Tab{m_list, AllEntries},
+                             Tab{m_starList, StarredOnly},
+                             Tab{m_notList, UnstarredOnly}}) {
+            const int keep = t.list->currentRow();
+            t.list->clear();
+            const QVector<int> rows = filterRows(m_store.entries, needle, t.filter);
             for (int i : rows) {
-                auto *it = new QListWidgetItem(lw);
+                auto *it = new QListWidgetItem(t.list);
                 it->setData(Qt::UserRole, i);
                 it->setToolTip(m_store.entries.at(i).text);
             }
-            if (lw->count()) {
-                lw->setCurrentRow(qBound(0, keep, lw->count() - 1));
+            if (t.list->count()) {
+                t.list->setCurrentRow(qBound(0, keep, t.list->count() - 1));
             }
         }
         for (const Entry &e : m_store.entries) {
-            stars += e.starred ? 1 : 0;
+            e.starred ? ++stars : ++unstarred;
         }
         m_tabBar->setTabVisible(1, stars > 0);
-        if (stars == 0 && m_stack->currentIndex() == 1) {
+        m_tabBar->setTabVisible(2, unstarred > 0);
+        // Whatever tab is active must exist: if it just became
+        // empty (e.g. the last starred entry was unstarred),
+        // fall back to "All" rather than show an empty page.
+        if (!m_tabBar->isTabVisible(m_tabBar->currentIndex())) {
             m_tabBar->setCurrentIndex(0);
             m_stack->setCurrentIndex(0);
         }
@@ -1476,24 +1554,27 @@ private:
         }
         const int old = m_store.hoverRow;
         m_store.hoverRow = r;
-        if (old >= 0) {
-            QListWidget *lw = m_stack->currentIndex() == 1 ? m_starList : m_list;
-            if (old < lw->count()) {
-                lw->viewport()->update(lw->visualItemRect(lw->item(old)));
-            }
+        QListWidget *lw = currentList();
+        if (old >= 0 && old < lw->count()) {
+            lw->viewport()->update(lw->visualItemRect(lw->item(old)));
         }
-        if (r >= 0) {
-            QListWidget *lw = m_stack->currentIndex() == 1 ? m_starList : m_list;
-            if (r < lw->count()) {
-                lw->viewport()->update(lw->visualItemRect(lw->item(r)));
-            }
+        if (r >= 0 && r < lw->count()) {
+            lw->viewport()->update(lw->visualItemRect(lw->item(r)));
         }
+    }
+
+    // The viewport of any history list — hover, clicks and
+    // leave events all apply to every tab's list.
+    bool isListViewport(QObject *watched) const
+    {
+        return watched == m_list->viewport()
+               || watched == m_starList->viewport()
+               || watched == m_notList->viewport();
     }
 
     bool eventFilter(QObject *watched, QEvent *ev) override
     {
-        if (ev->type() == QEvent::MouseMove
-            && (watched == m_list->viewport() || watched == m_starList->viewport())) {
+        if (ev->type() == QEvent::MouseMove && isListViewport(watched)) {
             auto *me = static_cast<QMouseEvent *>(ev);
             auto *view = qobject_cast<QAbstractItemView *>(qobject_cast<QWidget *>(watched)->parentWidget());
             setHoverRow(view->indexAt(me->pos()).row());
@@ -1508,7 +1589,7 @@ private:
         // which then emits itemClicked and PASTES an entry. That is why clicking
         // the X twice quickly deleted one row and pasted another.
         if ((ev->type() == QEvent::MouseButtonPress || ev->type() == QEvent::MouseButtonDblClick)
-            && (watched == m_list->viewport() || watched == m_starList->viewport())) {
+            && isListViewport(watched)) {
             auto *me = static_cast<QMouseEvent *>(ev);
             auto *view = qobject_cast<QAbstractItemView *>(qobject_cast<QWidget *>(watched)->parentWidget());
             const QModelIndex idx = view->indexAt(me->pos());
@@ -1537,7 +1618,7 @@ private:
             }
             return false;
         }
-        if (ev->type() == QEvent::Leave && (watched == m_list->viewport() || watched == m_starList->viewport())) {
+        if (ev->type() == QEvent::Leave && isListViewport(watched)) {
             setHoverRow(-1);
             return false;
         }
@@ -1667,6 +1748,7 @@ private:
     QStackedWidget *m_stack = nullptr;
     QListWidget *m_list = nullptr;
     QListWidget *m_starList = nullptr;
+    QListWidget *m_notList = nullptr;
     QLineEdit *m_search = nullptr;
     QLineEdit *m_newEntry = nullptr;
     QLabel *m_count = nullptr;
@@ -1841,26 +1923,48 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
     }
 
     printf("\n== search & tab filtering ==\n");
-    const QVector<int> all = filterRows(base, QString(), false);
+    const QVector<int> all = filterRows(base, QString(), AllEntries);
     check(all.size() == base.size(), "empty search returns every entry");
-    const QVector<int> stars = filterRows(base, QString(), true);
+    const QVector<int> stars = filterRows(base, QString(), StarredOnly);
     bool onlyStarred = true;
     for (int i : stars) {
         onlyStarred = onlyStarred && base.at(i).starred;
     }
     check(stars.size() == starred && onlyStarred, "starred filter returns only starred");
+    const QVector<int> plain = filterRows(base, QString(), UnstarredOnly);
+    bool onlyPlain = true;
+    for (int i : plain) {
+        onlyPlain = onlyPlain && !base.at(i).starred;
+    }
+    check(plain.size() == int(base.size()) - starred && onlyPlain,
+          "not-starred filter returns only unstarred entries");
     if (!base.isEmpty()) {
         const QString probe = base.first().text.left(6);
         if (!probe.isEmpty()) {
-            const QVector<int> hit = filterRows(base, probe, false);
+            const QVector<int> hit = filterRows(base, probe, AllEntries);
             bool allHit = !hit.isEmpty();
             for (int i : hit) {
                 allHit = allHit && base.at(i).text.contains(probe, Qt::CaseInsensitive);
             }
             check(allHit, "search narrows to matches only");
-            check(filterRows(base, QStringLiteral("zzz-no-such-thing"), false).isEmpty(), "no-match search returns empty");
+            check(filterRows(base, QStringLiteral("zzz-no-such-thing"), AllEntries).isEmpty(), "no-match search returns empty");
         }
     }
+
+    printf("\n== tab bar ==\n");
+    deck->reload();
+    deck->showForTest();
+    check(deck->tabCountForTest() == 3, "the panel offers All, Starred and Not starred");
+    check(deck->tabVisibleForTest(0), "the All tab is always available");
+    check(deck->tabVisibleForTest(1) == (starred > 0),
+          "the Starred tab appears only when something is starred");
+    check(deck->tabVisibleForTest(2) == (int(base.size()) - starred > 0),
+          "the Not starred tab appears only when something is unstarred");
+    deck->selectTabForTest(2);
+    check(deck->currentTabForTest() == 2 && deck->currentStackForTest() == 2,
+          "selecting Not starred switches the list");
+    deck->selectTabForTest(0);
+    check(deck->currentStackForTest() == 0, "selecting All switches back");
 
     printf("\n== write path (sandboxed) ==\n");
     // Already sandboxed for the whole suite; nothing below may touch the real DB.
@@ -2173,7 +2277,8 @@ int main(int argc, char **argv)
         QDir().mkpath(dir);
         auto *deck = new Deck;
         for (const QString &state : {QStringLiteral("all"), QStringLiteral("starred"),
-                                     QStringLiteral("search"), QStringLiteral("alpha"),
+                                     QStringLiteral("notstarred"), QStringLiteral("search"),
+                                     QStringLiteral("alpha"),
                                      QStringLiteral("new")}) {
             deck->renderState(dir + QStringLiteral("/") + state + QStringLiteral(".png"), state);
             printf("wrote %s/%s.png\n", qPrintable(dir), qPrintable(state));
