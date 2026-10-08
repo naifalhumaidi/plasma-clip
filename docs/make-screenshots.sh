@@ -20,7 +20,7 @@ FIXTURE="$(mktemp -d)"
 trap 'rm -rf "$FIXTURE"' EXIT
 
 python3 - "$FIXTURE" <<'PY'
-import sqlite3, struct, sys, time, zlib, pathlib
+import json, sqlite3, struct, sys, time, zlib, pathlib
 
 root = pathlib.Path(sys.argv[1])
 db = root / "history3.sqlite"
@@ -83,10 +83,21 @@ png = (b"\x89PNG\r\n\x1a\n"
 (d / data_uuid).write_bytes(png)
 con.commit()
 con.close()
-print(f"fixture: {len(rows) + 1} entries, 1 image")
+
+# A small trash sidecar too, so the Trash tab has something to show.
+# Same shape saveTrash() writes: a JSON array of row objects. The uuids
+# are deliberately not in main — a trashed row is not a history row.
+trash = [
+    {"uuid": letter * 40, "text": text, "mimetypes": "text/plain",
+     "added": now - ago, "last": now - ago, "starred": 0}
+    for letter, (text, ago, starred) in zip("abc", rows[5:8])
+]
+(root / "trash.json").write_text(json.dumps(trash))
+print(f"fixture: {len(rows) + 1} entries, 1 image, {len(trash)} trashed")
 PY
 
 export CUSTOM_CLIPBOARD_DATA="$FIXTURE"
+export CUSTOM_CLIPBOARD_TRASH="$FIXTURE/trash.json"
 export QT_QPA_PLATFORM=offscreen
 
 echo "==> rendering docs screenshots from synthetic data"
@@ -94,9 +105,12 @@ echo "==> rendering docs screenshots from synthetic data"
 "$BIN" --screenshot "$OUT/preview-hover.png"   --state hover   >/dev/null
 "$BIN" --screenshot "$OUT/preview-confirm.png" --state confirm >/dev/null
 
-# --preview writes all/starred/search/alpha/new.png; keep only what we document.
-mv -f "$OUT/all.png"     "$OUT/preview.png"
-mv -f "$OUT/starred.png" "$OUT/preview-starred.png"
+# --preview writes all/starred/notstarred/search/alpha/trash/new.png;
+# keep only the ones the docs reference.
+mv -f "$OUT/all.png"          "$OUT/preview.png"
+mv -f "$OUT/starred.png"      "$OUT/preview-starred.png"
+mv -f "$OUT/notstarred.png"   "$OUT/preview-notstarred.png"
+mv -f "$OUT/trash.png"        "$OUT/preview-trash.png"
 rm -f "$OUT/search.png" "$OUT/alpha.png" "$OUT/new.png"
 
 echo "done:"

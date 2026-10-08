@@ -45,7 +45,7 @@ function-pointer connections.
 | `./custom-clipboard` | normal, resident, waits for Meta+V |
 | `./custom-clipboard --selftest` | one-line summary, no window |
 | `./custom-clipboard --test` | full suite, no window |
-| `./custom-clipboard --preview DIR` | render five UI states to PNG |
+| `./custom-clipboard --preview DIR` | render the UI states to PNG |
 | `./custom-clipboard --screenshot F --state S` | render one state |
 
 `--preview` / `--screenshot` need `QT_QPA_PLATFORM=offscreen` to avoid touching
@@ -56,7 +56,9 @@ QT_QPA_PLATFORM=offscreen ./custom-clipboard --preview /tmp/states
 QT_QPA_PLATFORM=offscreen ./custom-clipboard --screenshot out.png --state hover
 ```
 
-States: `all`, `starred`, `search`, `alpha`, `new`, `hover`, `confirm`.
+States: `all`, `starred`, `notstarred`, `search`, `alpha`, `trash`, `new`,
+`hover`, `confirm`. The tab states need a fixture with content in that tab —
+`docs/make-screenshots.sh` builds one.
 
 ## Testing
 
@@ -64,9 +66,9 @@ States: `all`, `starred`, `search`, `alpha`, `new`, `hover`, `confirm`.
 QT_QPA_PLATFORM=offscreen ./custom-clipboard --test
 ```
 
-56 checks over the read path, sorting, search and tab filtering, the write path,
-the confirm popup, outside-click dismissal, double-click handling and the
-environment. The suite prints its own total, so do not quote a number here.
+Checks over the read path, sorting, search and tab filtering, the write path,
+the trash, the confirm popup, outside-click dismissal, double-click handling and
+the environment. The suite prints its own total, so do not quote a number here.
 
 Principles the suite follows:
 
@@ -76,6 +78,10 @@ Principles the suite follows:
   see [AGENTS.md](AGENTS.md). The suite refuses to start if the sandbox is not
   active, asserts the real row count is unchanged at the end, and fails loudly
   if the real history is empty.
+- **The trash sidecar is sandboxed too.** `CUSTOM_CLIPBOARD_TRASH` points the
+  trash at the sandbox for the whole suite, with its own refuse-to-start guard —
+  an unsandboxed trash test would empty the real trash for the same reason an
+  unsandboxed delete test destroyed the real history.
 - **Synthetic events, not injected input.** Clicks are delivered with
   `QApplication::sendEvent` straight to the widget. That exercises the same
   hit-testing a real click does without sending anything to the OS input layer.
@@ -102,9 +108,12 @@ Entry            one history row
 readHistory()    SELECT from history3.sqlite          (read-only)
 loadImage()      resolve an image blob to a QImage
 imageFileName()  Klipper's stored filename for an image
-Store            shared state: entries, thumbnail cache, hover row
+Store            shared state: entries, trash, thumbnail cache, hover row
 RowDelegate      paints a row: thumbnail, text, timestamp, buttons
-Deck             the popup: layout, tabs, search, sort, actions
+Deck             the popup: layout, four tabs, search, sort, actions
+loadTrash()      read the trash sidecar (~/.local/share/custom-clipboard/trash.json)
+trashEntry()     capture a row into the trash, then drop it from history
+restoreEntry()   copy a trashed row back into history
 ```
 
 `Store` exists so `RowDelegate` never needs to know about `Deck` — depending on

@@ -13,12 +13,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Search box, pinned to the top of the popup.
 - **All** / **Starred** tabs. The Starred tab only appears when something is
   starred.
+- **Not starred** tab — the complement of Starred, so you can act on everything
+  that is *not* protected. Appears only when unstarred entries exist.
+- **Trash** tab with restorable deletes. ✕ moves the entry into a JSON sidecar
+  (`~/.local/share/custom-clipboard/trash.json`) instead of destroying it; on
+  the Trash tab the buttons become **↩ restore** and **restore + star**, a body
+  click never pastes, and **Clear Trash** (red, its own confirmation) empties
+  the sidecar. Image payloads survive until then, so restored thumbnails work.
 - Sorting: Newest, Oldest, A–Z, Z–A.
 - Relative timestamps per row ("just now", "19 min ago", "1 h ago").
 - Image thumbnails, including copied image *files* (`file://` URIs) which Klipper
   records as text.
 - Per-row star and remove buttons, revealed on hover.
-- Right-click menu: Star/Unstar, Copy only, Delete entry.
+- Right-click menu: Star/Unstar, Copy only, Move to trash (Restore / Restore and
+  star / Copy only on the Trash tab).
 - **＋ New** — add an entry to the clipboard from an inline field.
 - **Clear** — remove every unstarred entry, with an in-window confirmation that
   reports both counts.
@@ -33,8 +41,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   colours: 400px wide, rounded panel, 28px action buttons.
 - The status line floats over the list instead of sitting below it, so showing a
   message no longer resizes the list and shifts the rows.
+- The per-row ✕ and the right-click *Delete entry* no longer delete outright;
+  they move the entry to the Trash tab (renamed *Move to trash*).
 
 ### Fixed
+- Meta+V did not reopen the panel for a while after closing it with an outside
+  click. The window's `isVisible()` lags the asynchronous Wayland hide, so the
+  toggle thought the panel was still open and hid it again. The intent is now
+  tracked explicitly (`m_wantVisible`) and outside-click dismissal arms on
+  window activation instead of a timer.
 - Clicking a row no longer closes the panel without pasting when the click
   deactivated the window. Dismissal on an outside click now checks that the
   pointer is genuinely off the panel, and ignores deactivations caused by the

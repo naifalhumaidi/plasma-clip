@@ -63,27 +63,34 @@ ydotool key 29:1 29:0                        # expect: silent, exit 0
 | Close by clicking elsewhere | click outside the panel |
 | Paste an item | click it, or select + `Enter` |
 | Search | type in the search box |
-| Switch tab | **All** / **Starred** |
+| Switch tab | **All** / **Starred** / **Not starred** / **Trash** |
 | Star an item | hover the row → **★** (left button) |
-| Delete an item | hover the row → **✕** (right button), or right-click → Delete |
-
-The ★ and ✕ buttons are click targets whether or not they are currently drawn,
-so a fast click still hits them.
+| Delete an item | hover the row → **✕** (right button), or right-click → Move to trash |
+| Restore from trash | on the **Trash** tab → **↩**, or right-click → Restore |
 | Copy without pasting | right-click → Copy only |
 | Add an entry | **＋ New**, type, `Enter` |
 | Clear unstarred entries | **Clear**, then confirm in the popup |
+| Empty the trash | **Trash** tab → **Clear Trash**, then confirm |
 | Sort | dropdown: Newest / Oldest / A–Z / Z–A |
 | Close without pasting | `Esc` |
+
+The ★ and ✕/↩ buttons are click targets whether or not they are currently
+drawn, so a fast click still hits them.
 
 ![Hover actions](docs/preview-hover.png)
 
 Notes:
 
-- The **Starred** tab only appears when something is starred, so it never
-  clutters the UI. Starred entries are *not* pinned to the top of the All tab —
-  they sort normally and live in their own tab.
-- **Clear** removes every unstarred entry and always keeps starred ones. It asks
-  for confirmation and tells you both counts before you commit.
+- The **Starred**, **Not starred** and **Trash** tabs only appear when they have
+  something to show, so they never clutter the UI. Starred entries are *not*
+  pinned to the top of the All tab — they sort normally and live in their own
+  tab.
+- **✕ never loses anything.** Deleting moves the entry to the **Trash** tab, and
+  on that tab the same button becomes **↩ restore** (the star button there
+  restores *and* stars). Clicking a trash row never pastes it.
+- **Clear** on a history tab removes every unstarred entry and always keeps
+  starred ones. **Clear Trash** is red and named differently precisely so the
+  two can never be confused; it asks for confirmation with counts either way.
 - Text and images are both handled. Copied **image files** (a `file://` path to a
   PNG/JPG/etc.) are detected and shown with a real thumbnail and filename.
 - Timestamps are relative: "just now", "19 min ago", "1 h ago".
@@ -102,8 +109,13 @@ Klipper (Plasma's clipboard manager) keeps history in SQLite at
 **not** limited by Klipper's in-memory cap. Image payloads live as
 content-addressed files under `~/.local/share/klipper/data/`.
 
-Starring, deleting and clearing write to that same database, so Klipper sees the
-changes and keeps its Starred tab in sync.
+Starring, clearing and restoring write to that same database, so Klipper sees
+the changes and keeps its Starred tab in sync.
+
+Deleting does **not** write to Klipper's database — it moves the row into a
+sidecar at `~/.local/share/custom-clipboard/trash.json`, so restoring is a copy
+back. Image payloads are left in Klipper's `data/` tree until the trash itself is
+emptied, which is why restored images still show a thumbnail.
 
 Clicking an item sets it through Klipper's own D-Bus API, closes the popup, waits
 ~200 ms for focus to return to your app, then injects Ctrl+V.
@@ -174,6 +186,10 @@ type, and the button hit-test has to handle it.
 
 **Clear says "Nothing to clear".** Every entry is starred, and Clear spares
 starred entries by design. Unstar some first.
+
+**"I deleted something by accident."** Open the **Trash** tab and click **↩**,
+or right-click the row → Restore. Entries only disappear for good when you press
+**Clear Trash**.
 
 ---
 

@@ -52,6 +52,10 @@ that clicks the ✕ button deleted real entries on every run.
 - Fail loudly when the real history is empty; otherwise the read and write
   checks pass *vacuously* rather than meaningfully.
 - Never assert a count. Assert an outcome.
+- The trash sidecar needs the same treatment: `CUSTOM_CLIPBOARD_TRASH` redirects
+  it for the whole suite, with its own refuse-to-start guard. Deleting now
+  *moves* entries there, so a suite that could reach it would silently capture
+  or empty the real trash.
 
 Recovery, if it ever happens: deleted rows survive in `history3.sqlite-wal`, and
 `tools/recover-klipper-history.py` carves them out. Back the database up first.
@@ -216,6 +220,18 @@ misleading "the button doesn't work" bug.
 
 They have their own tab. Within "All", sorting must ignore `starred` entirely.
 There is a fixture-based test for this; keep it that way.
+
+### The trash is ours, not Klipper's
+
+- Sidecar: `~/.local/share/custom-clipboard/trash.json`, a JSON array of row
+  objects. `CUSTOM_CLIPBOARD_TRASH` redirects it (tests and screenshots).
+- Trashing deletes only the `main` row and **keeps the `aux` rows**, so a
+  restored image still resolves its thumbnail; `clearTrash()` purges them.
+- Restoring copies the row back into `main` with its original uuid and starred
+  state. Never write trashed rows into Klipper's `main` "to keep things tidy" —
+  they would immediately reappear in the history.
+- The trash tab (index 3) hides whenever the sidecar is empty, like the other
+  conditional tabs.
 
 ## Before you claim something works
 
