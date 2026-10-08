@@ -769,7 +769,7 @@ public:
             QLineEdit { border: 1px solid palette(mid); border-radius: 8px; padding: 6px 10px;
                         background: palette(base); selection-background-color: palette(highlight); }
             QLineEdit:focus { border-color: palette(highlight); }
-            QTabBar::tab { padding: 5px 14px; border-radius: 7px; margin-right: 6px; color: palette(text); }
+            QTabBar::tab { padding: 5px 9px; border-radius: 7px; margin-right: 4px; color: palette(text); }
             QTabBar::tab:selected { background: palette(highlight); color: palette(highlighted-text); }
             QTabWidget::pane { border: none; }
             QListWidget { border: none; background: transparent; }
@@ -844,8 +844,13 @@ public:
         m_tabBar->setTabVisible(1, false);
         m_tabBar->setTabVisible(2, false);
         m_tabBar->setTabVisible(3, false);
-        bar->addWidget(m_tabBar);
-        bar->addStretch(1);
+        // The bar takes part in the slack (factor 1) instead of sitting beside
+        // a stretch that claims every spare pixel: with the stretch owning the
+        // slack the bar was left at its (stale, too-small) hint, four tabs
+        // overflowed, and QTabBar fell back to scroll buttons that clip the
+        // last tab. Absorbing the slack also pushes the sort box to the right
+        // edge, which is what the stretch was for.
+        bar->addWidget(m_tabBar, 1);
         m_sort = new QComboBox(root);
         m_sort->addItem(QStringLiteral("Newest"), int(Newest));
         m_sort->addItem(QStringLiteral("Oldest"), int(Oldest));
@@ -1208,6 +1213,32 @@ struct DoubleClickResult {
     bool tabVisibleForTest(int index) const
     {
         return m_tabBar && m_tabBar->isTabVisible(index);
+    }
+
+    // Wider than the bar means QTabBar switches to scroll buttons and clips
+    // the last tab. Overflow is easy to introduce (a longer label, a wider
+    // combo) and shows up as a clipped tab with no obvious error anywhere.
+    int tabBarOverflowForTest() const
+    {
+        if (!m_tabBar || !m_tabBar->isVisible()) {
+            return 0;
+        }
+        return m_tabBar->sizeHint().width() - m_tabBar->width();
+    }
+
+    bool tabBarFitsForTest() const
+    {
+        return tabBarOverflowForTest() <= 0;
+    }
+
+    int tabBarSizeHintForTest() const
+    {
+        return m_tabBar ? m_tabBar->sizeHint().width() : -1;
+    }
+
+    int tabBarWidthForTest() const
+    {
+        return m_tabBar ? m_tabBar->width() : -1;
     }
 
     int currentTabForTest() const
@@ -2560,6 +2591,12 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
         check(!inHistory, "trashing removes the entry from the history");
         check(loadTrash().size() == 1, "the trashed entry is captured in the trash sidecar");
         check(deck->tabVisibleForTest(3), "the Trash tab appears once something is trashed");
+        if (!deck->tabBarFitsForTest()) {
+            fprintf(stderr, "       tab bar overflow: %d px over (sizeHint=%d, width=%d)\n",
+                    deck->tabBarOverflowForTest(), deck->tabBarSizeHintForTest(),
+                    deck->tabBarWidthForTest());
+        }
+        check(deck->tabBarFitsForTest(), "all four tabs fit without scroll arrows");
 
         // The trash tab must be reachable and must NOT paste on body click.
         deck->selectTabForTest(3);
