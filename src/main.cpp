@@ -26,6 +26,9 @@
 #include <QHash>
 #include <QIcon>
 #include <QImage>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -227,6 +230,79 @@ QImage loadImage(const Entry &e)
     return QImage();
 }
 
+// A trashed entry, plus the timestamps Klipper needs to put it
+// back exactly where it was.
+struct TrashRow {
+    Entry e;
+    qint64 added = 0;
+    qint64 last = 0;
+};
+
+// The trash is a sidecar of our own: Klipper's deletes are
+// final, so removed entries are captured here to keep them
+// restorable. CUSTOM_CLIPBOARD_TRASH redirects it for tests,
+// exactly like CUSTOM_CLIPBOARD_DATA redirects the history.
+QString trashPath()
+{
+    const QByteArray env = qgetenv("CUSTOM_CLIPBOARD_TRASH");
+    if (!env.isEmpty()) {
+        return QString::fromLocal8Bit(env);
+    }
+    return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+        + QStringLiteral("/custom-clipboard/trash.json");
+}
+
+QVector<TrashRow> loadTrash()
+{
+    QVector<TrashRow> out;
+    QFile f(trashPath());
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return out;
+    }
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    f.close();
+    if (!doc.isArray()) {
+        return out;
+    }
+    for (const QJsonValue &v : doc.array()) {
+        const QJsonObject o = v.toObject();
+        TrashRow r;
+        r.e.uuid = o.value(QStringLiteral("uuid")).toString();
+        r.e.text = o.value(QStringLiteral("text")).toString();
+        r.e.mimetypes = o.value(QStringLiteral("mimetypes")).toString();
+        r.added = o.value(QStringLiteral("added")).toVariant().toLongLong();
+        r.last = o.value(QStringLiteral("last")).toVariant().toLongLong();
+        r.e.starred = o.value(QStringLiteral("starred")).toInt() != 0;
+        r.e.when = qMax(r.added, r.last);
+        r.e.isImage = r.e.mimetypes.contains(QLatin1String("image/"));
+        if (!r.e.uuid.isEmpty()) {
+            out.append(r);
+        }
+    }
+    return out;
+}
+
+void saveTrash(const QVector<TrashRow> &rows)
+{
+    QJsonArray arr;
+    for (const TrashRow &r : rows) {
+        QJsonObject o;
+        o.insert(QStringLiteral("uuid"), r.e.uuid);
+        o.insert(QStringLiteral("text"), r.e.text);
+        o.insert(QStringLiteral("mimetypes"), r.e.mimetypes);
+        o.insert(QStringLiteral("added"), r.added);
+        o.insert(QStringLiteral("last"), r.last);
+        o.insert(QStringLiteral("starred"), r.e.starred ? 1 : 0);
+        arr.append(o);
+    }
+    const QString path = trashPath();
+    QFileInfo(path).dir().mkpath(QStringLiteral("."));
+    QFile f(path);
+    if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        f.write(QJsonDocument(arr).toJson());
+    }
+}
+
 // Is the ydotool client binary installed at all?
 bool haveYdotool()
 {
@@ -415,13 +491,43 @@ class Store
 {
 public:
     QVector<Entry> entries;
+    // Entries the user removed, kept restorable. Not part of
+    // the Klipper history — they live in our sidecar file.
+    QVector<TrashRow> trash;
     mutable QHash<QString, QImage> thumbs;
     mutable QHash<QString, QString> captions;
     int hoverRow = -1;
+    // Set once the trash list exists, so the delegate can tell
+    // a trash row from a history row (they index different
+    // vectors behind the same Qt::UserRole).
+    const QAbstractItemModel *trashModel = nullptr;
 
     const Entry *entryFor(int entryIndex) const
     {
         return (entryIndex >= 0 && entryIndex < entries.size()) ? &entries.at(entryIndex) : nullptr;
+    }
+
+    const Entry *trashEntryFor(int trashIndex) const
+    {
+        return (trashIndex >= 0 && trashIndex < trash.size()) ? &trash.at(trashIndex).e : nullptr;
+    }
+
+    // By uuid, across history and trash: thumbnail loading and
+    // captions work the same for a trashed image entry, whose
+    // payload stays on disk until the trash is emptied.
+    const Entry *entryForUuid(const QString &uuid) const
+    {
+        for (const Entry &e : entries) {
+            if (e.uuid == uuid) {
+                return &e;
+            }
+        }
+        for (const TrashRow &r : trash) {
+            if (r.e.uuid == uuid) {
+                return &r.e;
+            }
+        }
+        return nullptr;
     }
 
     // Caption for a row: images show their filename, text shows its content.
@@ -463,19 +569,16 @@ public:
             return it.value();
         }
         QImage img;
-        for (const Entry &e : entries) {
-            if (e.uuid != uuid) {
-                continue;
-            }
-            if (e.isImage) {
-                img = loadImage(e);
+        const Entry *e = entryForUuid(uuid);
+        if (e) {
+            if (e->isImage) {
+                img = loadImage(*e);
             } else {
-                const QString path = localImageUriPath(e);
+                const QString path = localImageUriPath(*e);
                 if (!path.isEmpty()) {
                     img.load(path);
                 }
             }
-            break;
         }
         thumbs.insert(uuid, img);
         return img;
@@ -516,7 +619,13 @@ public:
             p->drawRoundedRect(row.adjusted(8, 1, -8, -1), 7, 7);
         }
 
-        const Entry *e = m_store ? m_store->entryFor(idx.data(Qt::UserRole).toInt()) : nullptr;
+        // Trash rows come from the sidecar, not the history,
+        // so they resolve through the trash vector.
+        const bool trashView = m_store && idx.model() == m_store->trashModel;
+        const Entry *e = m_store
+                             ? (trashView ? m_store->trashEntryFor(idx.data(Qt::UserRole).toInt())
+                                          : m_store->entryFor(idx.data(Qt::UserRole).toInt()))
+                             : nullptr;
         const QColor fg = selected ? opt.palette.color(QPalette::HighlightedText) : opt.palette.color(QPalette::Text);
         const QColor dim = selected ? opt.palette.color(QPalette::HighlightedText)
                                     : opt.palette.color(QPalette::PlaceholderText);
@@ -610,7 +719,11 @@ public:
             p->setFont(bf);
             p->setPen(fg);
             p->drawText(starButtonRect(row), Qt::AlignCenter, e && e->starred ? QStringLiteral("★") : QStringLiteral("☆"));
-            p->drawText(removeButtonRect(row), Qt::AlignCenter, QStringLiteral("✕"));
+            // In the trash, the outer button brings the entry
+            // back instead of removing it for good.
+            p->drawText(removeButtonRect(row),
+                        Qt::AlignCenter,
+                        trashView ? QStringLiteral("↩") : QStringLiteral("✕"));
         } else if (e && e->starred) {
             QFont sf = f;
             sf.setPointSizeF(f.pointSizeF() + 1);
@@ -675,6 +788,9 @@ public:
             QPushButton { border: 1px solid palette(mid); border-radius: 7px; padding: 4px 12px;
                           background: palette(base); }
             QPushButton:hover { background: palette(alternate-base); }
+            QPushButton[danger="true"] { background: #c0392b; color: white; border: none;
+                                         font-weight: 600; }
+            QPushButton[danger="true"]:hover { background: #e74c3c; }
             QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
             QScrollBar::handle:vertical { background: palette(mid); border-radius: 4px; min-height: 30px; }
             QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
@@ -722,10 +838,12 @@ public:
         m_tabBar->addTab(QStringLiteral("All"));
         m_tabBar->addTab(QStringLiteral("Starred"));
         m_tabBar->addTab(QStringLiteral("Not starred"));
+        m_tabBar->addTab(QStringLiteral("Trash"));
         // Tabs appear only when they would show something, so the
         // bar never offers an empty list to click.
         m_tabBar->setTabVisible(1, false);
         m_tabBar->setTabVisible(2, false);
+        m_tabBar->setTabVisible(3, false);
         bar->addWidget(m_tabBar);
         bar->addStretch(1);
         m_sort = new QComboBox(root);
@@ -740,11 +858,14 @@ public:
         m_list = makeList();
         m_starList = makeList();
         m_notList = makeList();
+        m_trashList = makeList();
+        m_store.trashModel = m_trashList->model();
         m_stack = new QStackedWidget(root);
         m_stack->setFrameShape(QFrame::NoFrame);
         m_stack->addWidget(m_list);
         m_stack->addWidget(m_starList);
         m_stack->addWidget(m_notList);
+        m_stack->addWidget(m_trashList);
         lay->addWidget(m_stack, 1);
 
         // Inline "new entry" field — a modal dialog would open behind this
@@ -786,9 +907,10 @@ public:
         connect(m_tabBar, &QTabBar::currentChanged, this, [this](int i) {
             m_stack->setCurrentIndex(i);
             setHoverRow(-1);
+            updateClearButton();
         });
 
-        for (QListWidget *lw : {m_list, m_starList, m_notList}) {
+        for (QListWidget *lw : {m_list, m_starList, m_notList, m_trashList}) {
             connect(lw, &QListWidget::itemActivated, this, [this, lw](QListWidgetItem *it) { choose(lw, it); });
             connect(lw, &QListWidget::itemClicked, this, [this, lw](QListWidgetItem *it) { choose(lw, it); });
             connect(lw, &QListWidget::customContextMenuRequested, this, &Deck::contextMenu);
@@ -800,6 +922,7 @@ public:
         m_list->setItemDelegate(m_delegate);
         m_starList->setItemDelegate(m_delegate);
         m_notList->setItemDelegate(m_delegate);
+        m_trashList->setItemDelegate(m_delegate);
 
         auto *esc = new QShortcut(QKeySequence(Qt::Key_Escape), this);
         esc->setContext(Qt::WindowShortcut);
@@ -828,6 +951,9 @@ public:
         } else if (state == QLatin1String("notstarred")) {
             m_tabBar->setCurrentIndex(2);
             m_stack->setCurrentIndex(2);
+        } else if (state == QLatin1String("trash")) {
+            m_tabBar->setCurrentIndex(3);
+            m_stack->setCurrentIndex(3);
         } else if (state == QLatin1String("new")) {
             m_newEntry->setText(QStringLiteral("a freshly added entry"));
             m_newEntry->setVisible(true);
@@ -888,6 +1014,11 @@ public:
     QListWidget *testList()
     {
         return m_list;
+    }
+
+    QListWidget *trashListForTest()
+    {
+        return m_trashList;
     }
 
     QRect rowRectFor(int row) const
@@ -1135,6 +1266,16 @@ struct DoubleClickResult {
         }
     }
 
+    void trashByUuidForTest(const QString &uuid)
+    {
+        trashEntry(uuid);
+    }
+
+    int clearTrashForTest()
+    {
+        return clearTrash();
+    }
+
     // Deletes every unstarred entry, keeping starred ones. Returns how many
     // were removed. Starred rows are explicitly preserved.
     int clearUnstarred()
@@ -1176,6 +1317,7 @@ struct DoubleClickResult {
     {
         m_store.clearThumbs();
         m_store.entries = readHistory();
+        m_store.trash = loadTrash();
         applySort();
         rebuild();
     }
@@ -1351,6 +1493,7 @@ private:
         switch (m_stack->currentIndex()) {
         case 1: return m_starList;
         case 2: return m_notList;
+        case 3: return m_trashList;
         default: return m_list;
         }
     }
@@ -1387,19 +1530,57 @@ private:
         for (const Entry &e : m_store.entries) {
             e.starred ? ++stars : ++unstarred;
         }
+        // The trash is not part of the Klipper history, so it
+        // is filled from the sidecar, not from filterRows().
+        {
+            const int keep = m_trashList->currentRow();
+            m_trashList->clear();
+            for (int i = 0; i < m_store.trash.size(); ++i) {
+                const Entry &e = m_store.trash.at(i).e;
+                if (!needle.isEmpty() && !e.text.contains(needle, Qt::CaseInsensitive)) {
+                    continue;
+                }
+                auto *it = new QListWidgetItem(m_trashList);
+                it->setData(Qt::UserRole, i);
+                it->setToolTip(e.text);
+            }
+            if (m_trashList->count()) {
+                m_trashList->setCurrentRow(qBound(0, keep, m_trashList->count() - 1));
+            }
+        }
         m_tabBar->setTabVisible(1, stars > 0);
         m_tabBar->setTabVisible(2, unstarred > 0);
+        m_tabBar->setTabVisible(3, !m_store.trash.isEmpty());
         // Whatever tab is active must exist: if it just became
-        // empty (e.g. the last starred entry was unstarred),
-        // fall back to "All" rather than show an empty page.
+        // empty (e.g. the trash was emptied), fall back to
+        // "All" rather than show an empty page.
         if (!m_tabBar->isTabVisible(m_tabBar->currentIndex())) {
             m_tabBar->setCurrentIndex(0);
             m_stack->setCurrentIndex(0);
         }
+        updateClearButton();
         m_count->setText(QStringLiteral("%1 item%2")
                              .arg(m_store.entries.size())
                              .arg(m_store.entries.size() == 1 ? QString() : QStringLiteral("s")));
         m_status->setVisible(false);
+    }
+
+    // The header's Clear button means "clear unstarred
+    // history" on the history tabs, but "empty the trash"
+    // on the trash tab. Both the label and the colour
+    // change, so it cannot be mistaken for the same act.
+    void updateClearButton()
+    {
+        const bool trashTab = m_stack && m_stack->currentIndex() == 3;
+        m_clearBtn->setText(trashTab ? QStringLiteral("Clear Trash")
+                                     : QStringLiteral("Clear"));
+        m_clearBtn->setProperty("danger", trashTab);
+        m_clearBtn->setToolTip(trashTab
+                                       ? QStringLiteral("Permanently remove every trashed entry")
+                                       : QStringLiteral("Remove every entry except starred ones"));
+        // Repolish so the [danger] stylesheet applies now.
+        m_clearBtn->style()->unpolish(m_clearBtn);
+        m_clearBtn->style()->polish(m_clearBtn);
     }
 
     void layoutAtCursor()
@@ -1474,17 +1655,17 @@ private:
         auto *btns = new QHBoxLayout;
         btns->addStretch(1);
         auto *cancel = new QPushButton(QStringLiteral("Cancel"), card);
-        auto *ok = new QPushButton(QStringLiteral("Clear"), card);
-        ok->setObjectName(QStringLiteral("danger"));
+        m_confirmOk = new QPushButton(QStringLiteral("Clear"), card);
+        m_confirmOk->setObjectName(QStringLiteral("danger"));
         btns->addWidget(cancel);
-        btns->addWidget(ok);
+        btns->addWidget(m_confirmOk);
         cl->addLayout(btns);
 
         ov->addWidget(card);
         ov->addStretch(1);
 
         connect(cancel, &QPushButton::clicked, this, [this] { m_overlay->hide(); });
-        connect(ok, &QPushButton::clicked, this, &Deck::confirmClear);
+        connect(m_confirmOk, &QPushButton::clicked, this, &Deck::confirmClear);
         m_overlay->hide();
     }
 
@@ -1500,6 +1681,14 @@ private:
     void confirmClear()
     {
         m_overlay->hide();
+        if (m_confirmingTrash) {
+            const int removed = clearTrash();
+            flash(removed ? QStringLiteral("Removed %1 trashed %2.")
+                              .arg(removed)
+                              .arg(removed == 1 ? QStringLiteral("entry") : QStringLiteral("entries"))
+                          : QStringLiteral("Trash was already empty."));
+            return;
+        }
         const int removed = clearUnstarred();
         flash(removed ? QStringLiteral("Removed %1 unstarred entr%2.")
                            .arg(removed)
@@ -1509,6 +1698,22 @@ private:
 
     void toggleClear()
     {
+        if (m_stack->currentIndex() == 3) {
+            if (m_store.trash.isEmpty()) {
+                flash(QStringLiteral("Trash is already empty."));
+                return;
+            }
+            const int n = int(m_store.trash.size());
+            m_confirmingTrash = true;
+            m_confirmOk->setText(QStringLiteral("Clear Trash"));
+            showConfirm(QStringLiteral("Empty the trash?"),
+                        QStringLiteral("This permanently removes %1 trashed %2.\n\nThis cannot be undone.")
+                            .arg(n)
+                            .arg(n == 1 ? QStringLiteral("entry") : QStringLiteral("entries")));
+            return;
+        }
+        m_confirmingTrash = false;
+        m_confirmOk->setText(QStringLiteral("Clear"));
         const int n = unstarredCount();
         const int kept = m_store.entries.size() - n;
         if (n == 0) {
@@ -1569,7 +1774,8 @@ private:
     {
         return watched == m_list->viewport()
                || watched == m_starList->viewport()
-               || watched == m_notList->viewport();
+               || watched == m_notList->viewport()
+               || watched == m_trashList->viewport();
     }
 
     bool eventFilter(QObject *watched, QEvent *ev) override
@@ -1595,9 +1801,32 @@ private:
             const QModelIndex idx = view->indexAt(me->pos());
             if (idx.isValid()) {
                 const QRect row = view->visualRect(idx);
-                const Entry *e = m_store.entryFor(idx.data(Qt::UserRole).toInt());
+                const bool trashView = (watched == m_trashList->viewport());
+                const Entry *e = trashView
+                                     ? m_store.trashEntryFor(idx.data(Qt::UserRole).toInt())
+                                     : m_store.entryFor(idx.data(Qt::UserRole).toInt());
                 if (e) {
                     const QPoint p = me->pos();
+                    if (trashView && starButtonRect(row).contains(p)) {
+                        traceClick(QStringLiteral("RESTORE-STAR row=%1 pos=%2,%3")
+                                       .arg(idx.row())
+                                       .arg(p.x())
+                                       .arg(p.y()));
+                        // In the trash the star button restores
+                        // the entry and puts it back starred.
+                        restoreEntry(e->uuid, true);
+                        return true;
+                    }
+                    if (trashView && removeButtonRect(row).contains(p)) {
+                        traceClick(QStringLiteral("RESTORE row=%1 pos=%2,%3")
+                                       .arg(idx.row())
+                                       .arg(p.x())
+                                       .arg(p.y()));
+                        // The outer button in the trash is a
+                        // restore, not a delete.
+                        restoreEntry(e->uuid, false);
+                        return true;
+                    }
                     if (starButtonRect(row).contains(p)) {
                         traceClick(QStringLiteral("STAR row=%1 pos=%2,%3")
                                        .arg(idx.row())
@@ -1633,7 +1862,33 @@ private:
             return;
         }
         const int idx = it->data(Qt::UserRole).toInt();
-        if (idx < 0 || idx >= m_store.entries.size()) {
+        if (idx < 0) {
+            return;
+        }
+
+        if (lw == m_trashList) {
+            if (idx >= m_store.trash.size()) {
+                return;
+            }
+            const Entry e = m_store.trash.at(idx).e;
+            QMenu menu;
+            menu.setAttribute(Qt::WA_DeleteOnClose);
+            QAction *restore = menu.addAction(QStringLiteral("Restore"));
+            QAction *restoreStar = menu.addAction(QStringLiteral("Restore and star"));
+            QAction *copy = menu.addAction(QStringLiteral("Copy only"));
+            QAction *chosen = menu.exec(lw->viewport()->mapToGlobal(pos));
+            if (chosen == restore) {
+                restoreEntry(e.uuid, false);
+            } else if (chosen == restoreStar) {
+                restoreEntry(e.uuid, true);
+            } else if (chosen == copy) {
+                applyEntry(e);
+                flash(QStringLiteral("Copied."));
+            }
+            return;
+        }
+
+        if (idx >= m_store.entries.size()) {
             return;
         }
         const Entry e = m_store.entries.at(idx);
@@ -1643,7 +1898,7 @@ private:
         QAction *star = menu.addAction(e.starred ? QStringLiteral("Unstar") : QStringLiteral("Star"));
         QAction *copy = menu.addAction(QStringLiteral("Copy only"));
         menu.addSeparator();
-        QAction *del = menu.addAction(QStringLiteral("Delete entry"));
+        QAction *del = menu.addAction(QStringLiteral("Move to trash"));
         QAction *chosen = menu.exec(lw->viewport()->mapToGlobal(pos));
         if (chosen == star) {
             setStar(e.uuid, !e.starred);
@@ -1651,7 +1906,7 @@ private:
             applyEntry(e);
             flash(QStringLiteral("Copied."));
         } else if (chosen == del) {
-            deleteEntry(e.uuid);
+            trashEntry(e.uuid);
         }
     }
 
@@ -1675,6 +1930,130 @@ private:
         flash(QStringLiteral("Entry deleted."));
     }
 
+    // Moves an entry to the trash instead of deleting it
+    // outright: the row is captured into our sidecar first,
+    // so it stays restorable. Only the main row is removed;
+    // aux rows (image payloads) are kept so a restore
+    // brings the thumbnail back too, and are cleaned up
+    // when the trash itself is emptied.
+    void trashEntry(const QString &uuid)
+    {
+        TrashRow row;
+        row.e.uuid = uuid;
+        bool found = false;
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("cctoast"));
+        db.setDatabaseName(klipperDir() + QStringLiteral("/history3.sqlite"));
+        if (db.open()) {
+            QSqlQuery q(db);
+            q.exec(QStringLiteral("PRAGMA busy_timeout=2000"));
+            q.prepare(QStringLiteral("SELECT added_time, last_used_time, mimetypes, text, starred FROM main WHERE uuid=?"));
+            q.addBindValue(uuid);
+            if (q.exec() && q.next()) {
+                found = true;
+                row.added = q.value(0).toLongLong();
+                row.last = q.value(1).toLongLong();
+                row.e.mimetypes = q.value(2).toString();
+                row.e.text = q.value(3).toString();
+                row.e.starred = q.value(4).toInt() != 0;
+                row.e.when = qMax(row.added, row.last);
+                row.e.isImage = row.e.mimetypes.contains(QLatin1String("image/"));
+            }
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("cctoast"));
+        if (!found) {
+            reload();
+            return;
+        }
+        QVector<TrashRow> trash = loadTrash();
+        trash.prepend(row); // newest on top, like the history
+        saveTrash(trash);
+
+        QSqlDatabase db2 = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("cctoast2"));
+        db2.setDatabaseName(klipperDir() + QStringLiteral("/history3.sqlite"));
+        if (db2.open()) {
+            QSqlQuery q(db2);
+            q.prepare(QStringLiteral("DELETE FROM main WHERE uuid=?"));
+            q.addBindValue(uuid);
+            q.exec();
+            db2.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("cctoast2"));
+        reload();
+        flash(QStringLiteral("Moved to trash."));
+    }
+
+    // Puts a trashed entry back into Klipper with its
+    // original timestamps. With star=true the entry also
+    // comes back starred — that is what the star button
+    // in the trash tab does.
+    void restoreEntry(const QString &uuid, bool star)
+    {
+        QVector<TrashRow> trash = loadTrash();
+        int at = -1;
+        for (int i = 0; i < trash.size(); ++i) {
+            if (trash.at(i).e.uuid == uuid) {
+                at = i;
+                break;
+            }
+        }
+        if (at < 0) {
+            reload();
+            return;
+        }
+        const TrashRow row = trash.takeAt(at);
+        saveTrash(trash);
+
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("ccrest"));
+        db.setDatabaseName(klipperDir() + QStringLiteral("/history3.sqlite"));
+        if (db.open()) {
+            QSqlQuery q(db);
+            q.exec(QStringLiteral("PRAGMA busy_timeout=2000"));
+            q.prepare(QStringLiteral("INSERT OR REPLACE INTO main VALUES (?,?,?,?,?,?)"));
+            q.addBindValue(row.e.uuid);
+            q.addBindValue(row.added);
+            q.addBindValue(row.last);
+            q.addBindValue(row.e.mimetypes);
+            q.addBindValue(row.e.text);
+            q.addBindValue(star || row.e.starred ? 1 : 0);
+            q.exec();
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("ccrest"));
+        reload();
+        flash(star ? QStringLiteral("Restored and starred.")
+                   : QStringLiteral("Restored from trash."));
+    }
+
+    // Empties the trash for good, including the image
+    // payload rows kept aside for a possible restore.
+    int clearTrash()
+    {
+        const QVector<TrashRow> trash = loadTrash();
+        if (trash.isEmpty()) {
+            return 0;
+        }
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("cctrash"));
+        db.setDatabaseName(klipperDir() + QStringLiteral("/history3.sqlite"));
+        if (db.open()) {
+            QSqlQuery q(db);
+            q.exec(QStringLiteral("PRAGMA busy_timeout=2000"));
+            for (const TrashRow &r : trash) {
+                for (const QString &sql : {QStringLiteral("DELETE FROM aux WHERE uuid=?"),
+                                           QStringLiteral("DELETE FROM aux WHERE data_uuid=?")}) {
+                    q.prepare(sql);
+                    q.addBindValue(r.e.uuid);
+                    q.exec();
+                }
+            }
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("cctrash"));
+        saveTrash({});
+        reload();
+        return int(trash.size());
+    }
+
     void applyEntry(const Entry &e)
     {
         if (e.isImage) {
@@ -1691,6 +2070,12 @@ private:
 
     void choose(QListWidget *lw, QListWidgetItem *it)
     {
+        if (lw == m_trashList) {
+            // Nothing is pasted from the trash: restoring
+            // is an explicit act on the row's own buttons.
+            flash(QStringLiteral("Use the ↩ button to restore a trashed entry."));
+            return;
+        }
         if (!it) {
             return;
         }
@@ -1749,6 +2134,7 @@ private:
     QListWidget *m_list = nullptr;
     QListWidget *m_starList = nullptr;
     QListWidget *m_notList = nullptr;
+    QListWidget *m_trashList = nullptr;
     QLineEdit *m_search = nullptr;
     QLineEdit *m_newEntry = nullptr;
     QLabel *m_count = nullptr;
@@ -1758,6 +2144,8 @@ private:
     QWidget *m_overlay = nullptr;
     QLabel *m_confirmTitle = nullptr;
     QLabel *m_confirmBody = nullptr;
+    QPushButton *m_confirmOk = nullptr;
+    bool m_confirmingTrash = false; // which confirm is on screen
     QComboBox *m_sort = nullptr;
     RowDelegate *m_delegate = nullptr;
     Store m_store;
@@ -1795,6 +2183,10 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
     QDir(tmpDir).removeRecursively();
     QDir().mkpath(tmpDir);
     qputenv("CUSTOM_CLIPBOARD_DATA", tmpDir.toLocal8Bit());
+    // The trash is a sidecar, so it needs its own redirect — without it
+    // the suite's restore/empty checks would read the real one.
+    qputenv("CUSTOM_CLIPBOARD_TRASH",
+            (tmpDir + QStringLiteral("/trash.json")).toLocal8Bit());
 
     bool dataSeeded = false;
     std::function<void(const QString &, const QString &)> copyTree =
@@ -1819,6 +2211,13 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
                         "       Refusing to run: an unsandboxed suite would DELETE the\n"
                         "       real clipboard history.\n",
                 qPrintable(klipperDir()), qPrintable(realDbPath));
+        return 2;
+    }
+    if (!trashPath().contains(tmpDir)) {
+        fprintf(stderr, "FATAL: trash sandbox not active (trashPath=%s).\n"
+                        "       Refusing to run: an unsandboxed suite would empty the\n"
+                        "       real trash.\n",
+                qPrintable(trashPath()));
         return 2;
     }
 
@@ -1954,12 +2353,13 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
     printf("\n== tab bar ==\n");
     deck->reload();
     deck->showForTest();
-    check(deck->tabCountForTest() == 3, "the panel offers All, Starred and Not starred");
+    check(deck->tabCountForTest() == 4, "the panel offers All, Starred, Not starred and Trash");
     check(deck->tabVisibleForTest(0), "the All tab is always available");
     check(deck->tabVisibleForTest(1) == (starred > 0),
           "the Starred tab appears only when something is starred");
     check(deck->tabVisibleForTest(2) == (int(base.size()) - starred > 0),
           "the Not starred tab appears only when something is unstarred");
+    check(!deck->tabVisibleForTest(3), "the Trash tab starts hidden (the trash is empty)");
     deck->selectTabForTest(2);
     check(deck->currentTabForTest() == 2 && deck->currentStackForTest() == 2,
           "selecting Not starred switches the list");
@@ -2055,7 +2455,7 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
                         gone = false;
                     }
                 }
-                check(gone, "clicking the REMOVE button deletes the entry");
+                check(gone, "clicking the REMOVE button moves the entry out of the history");
 
                 // a click on the row body must not be mistaken for a button
                 deck->showForTest();
@@ -2127,6 +2527,121 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
     check(readRealHistorySize(realDbPath) == realCountAtStart,
           "real database untouched by the tests");
     qputenv("CUSTOM_CLIPBOARD_DATA", tmpDir.toLocal8Bit());
+
+    printf("\n== trash (restorable deletes) ==\n");
+    {
+        // The write-path checks above empty the sandbox; start from a
+        // clean copy again so the trash checks see real rows.
+        seedSandbox();
+        deck->reload();
+        deck->showForTest();
+
+        const int row = deck->firstNonStarredRow();
+        const QString uuid = deck->uuidAtRow(row);
+        check(row >= 0 && !uuid.isEmpty(), "found a row to move into the trash");
+
+        const bool wasStarred = [&] {
+            for (const Entry &e : readHistory()) {
+                if (e.uuid == uuid) {
+                    return e.starred;
+                }
+            }
+            return false;
+        }();
+
+        // Removing through the UI path must KEEP the row, not lose it.
+        deck->trashByUuidForTest(uuid);
+        bool inHistory = false;
+        for (const Entry &e : readHistory()) {
+            if (e.uuid == uuid) {
+                inHistory = true;
+            }
+        }
+        check(!inHistory, "trashing removes the entry from the history");
+        check(loadTrash().size() == 1, "the trashed entry is captured in the trash sidecar");
+        check(deck->tabVisibleForTest(3), "the Trash tab appears once something is trashed");
+
+        // The trash tab must be reachable and must NOT paste on body click.
+        deck->selectTabForTest(3);
+        check(deck->currentStackForTest() == 3, "the Trash tab switches the list");
+        check(deck->clearButtonTextForTest() == QStringLiteral("Clear Trash"),
+              "the Clear button says Clear Trash on the trash tab");
+        deck->resetChooseCountForTest();
+        QListWidget *tl = deck->trashListForTest();
+        if (tl->count() > 0) {
+            const QRect tr = tl->visualItemRect(tl->item(0));
+            Deck::clickAt(tl->viewport(), QPoint(tr.left() + 20, tr.center().y()));
+        }
+        check(deck->chooseCountForTest() == 0, "clicking a trash row does not paste it");
+
+        // Restore through a REAL click on the ↩ button: paint and
+        // hit-test share removeButtonRect(), so this also proves the
+        // delegate draws a restore affordance exactly where the
+        // hit-test looks for it.
+        if (tl->count() > 0) {
+            const QRect tr2 = tl->visualItemRect(tl->item(0));
+            Deck::clickAt(tl->viewport(), removeButtonRect(tr2).center());
+        }
+        deck->selectTabForTest(0);
+        bool back = false;
+        bool backStarred = false;
+        for (const Entry &e : readHistory()) {
+            if (e.uuid == uuid) {
+                back = true;
+                backStarred = e.starred;
+            }
+        }
+        check(back, "clicking ↩ restores the entry into the history");
+        check(backStarred == wasStarred, "restore keeps the original starred state");
+        check(loadTrash().isEmpty(), "clicking ↩ takes the entry out of the trash");
+        check(!deck->tabVisibleForTest(3), "the Trash tab disappears when the trash is empty");
+
+        // The star button in the trash restores AND stars (user request).
+        deck->reload();
+        deck->showForTest();
+        const QString uuid2 = deck->uuidAtRow(deck->firstNonStarredRow());
+        deck->trashByUuidForTest(uuid2);
+        deck->selectTabForTest(3);
+        QListWidget *tl2 = deck->trashListForTest();
+        if (tl2->count() > 0) {
+            const QRect sr = tl2->visualItemRect(tl2->item(0));
+            Deck::clickAt(tl2->viewport(), starButtonRect(sr).center());
+        }
+        deck->selectTabForTest(0);
+        bool back2 = false;
+        bool starred2 = false;
+        for (const Entry &e : readHistory()) {
+            if (e.uuid == uuid2) {
+                back2 = true;
+                starred2 = e.starred;
+            }
+        }
+        check(back2 && starred2, "the trash star button restores the entry as starred");
+        check(loadTrash().isEmpty(), "starring from the trash empties it too");
+
+        // Clearing the trash: empties the sidecar, entries stay gone.
+        deck->reload();
+        deck->showForTest();
+        const int historyBefore = readHistory().size();
+        const QString first = deck->uuidAtRow(0);
+        deck->trashByUuidForTest(first);
+        const QString second = deck->uuidAtRow(0);
+        check(second != first, "the next row takes the vacated slot");
+        deck->trashByUuidForTest(second);
+        const int trashed = int(loadTrash().size());
+        check(trashed == 2, "entries accumulate in the trash");
+        check(readHistory().size() == historyBefore - 2,
+              "each trash takes one entry out of the history");
+        deck->selectTabForTest(3);
+        check(deck->clearButtonTextForTest() == QStringLiteral("Clear Trash"),
+              "the Clear button still reads Clear Trash before emptying");
+        deck->selectTabForTest(0);
+        const int emptied = deck->clearTrashForTest();
+        check(emptied == trashed, "clearing reports every removed trashed entry");
+        check(loadTrash().isEmpty(), "the trash sidecar is empty after clearing");
+        check(!deck->tabVisibleForTest(3), "the Trash tab hides once the trash is emptied");
+        deck->hide();
+    }
 
     printf("\n== click-outside dismissal ==\n");
     // On Wayland a Tool window has no pointer grab, so an outside click is
@@ -2260,8 +2775,10 @@ int main(int argc, char **argv)
             stars += e.starred ? 1 : 0;
             imgs += e.isImage ? 1 : 0;
         }
-        printf("entries: %d\nstarred: %d\nimages: %d\n", int(hist.size()), stars, imgs);
+        printf("entries: %d\nstarred: %d\nimages: %d\ntrash: %d\n",
+               int(hist.size()), stars, imgs, int(loadTrash().size()));
         printf("klipper db: %s\n", QFile::exists(klipperDir() + QStringLiteral("/history3.sqlite")) ? "ok" : "missing");
+        printf("trash file: %s\n", QFile::exists(trashPath()) ? "ok" : "not created yet");
         printf("ydotool: %s\n", haveYdotool() ? "yes" : "NO");
         return 0;
     }
@@ -2278,7 +2795,7 @@ int main(int argc, char **argv)
         auto *deck = new Deck;
         for (const QString &state : {QStringLiteral("all"), QStringLiteral("starred"),
                                      QStringLiteral("notstarred"), QStringLiteral("search"),
-                                     QStringLiteral("alpha"),
+                                     QStringLiteral("alpha"), QStringLiteral("trash"),
                                      QStringLiteral("new")}) {
             deck->renderState(dir + QStringLiteral("/") + state + QStringLiteral(".png"), state);
             printf("wrote %s/%s.png\n", qPrintable(dir), qPrintable(state));
