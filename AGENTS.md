@@ -52,6 +52,15 @@ that clicks the ✕ button deleted real entries on every run.
 - Fail loudly when the real history is empty; otherwise the read and write
   checks pass *vacuously* rather than meaningfully.
 - Never assert a count. Assert an outcome.
+- **Assert where a delete went, not that it vanished.** "Gone from the history"
+  is also true of a hard delete, so a check written that way stays green while
+  the entry is destroyed. The ✕ button hard-deleted for days here — 92 rows down
+  to 27, six starred entries gone, no trash file ever created — and every
+  existing check passed. `check(entry left the history)` had to become
+  `check(entry is in the trash)`, and only then did it go red on the old code.
+- Grep for every caller of a destructive primitive when you touch it. The trash
+  feature wired the context menu to `trashEntry()` and left `deleteEntry()` on
+  the ✕ path; both are `void` and look identical at the call site.
 - The trash sidecar needs the same treatment: `CUSTOM_CLIPBOARD_TRASH` redirects
   it for the whole suite, with its own refuse-to-start guard. Deleting now
   *moves* entries there, so a suite that could reach it would silently capture

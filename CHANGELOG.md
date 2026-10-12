@@ -28,6 +28,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Right-click menu: Star/Unstar, Copy only, Move to trash (Restore / Restore and
   star / Copy only on the Trash tab).
 - **＋ New** — add an entry to the clipboard from an inline field.
+- Keyboard navigation from the search box: ↑/↓ walk the list, `Enter` pastes the
+  selected row.
 - **Clear** — remove every unstarred entry, with an in-window confirmation that
   reports both counts.
 - Headless `--test` suite and `--preview` / `--screenshot` renderers
@@ -45,6 +47,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   they move the entry to the Trash tab (renamed *Move to trash*).
 
 ### Fixed
+- The row ✕ button destroyed entries instead of moving them to the **Trash**
+  tab: it called the hard delete while the right-click action trashed. Entries
+  vanished with an empty trash as the only trace, including ones copied seconds
+  earlier. The suite did not catch it because every check only asserted "gone
+  from the history", which a hard delete also satisfies — the check now asserts
+  where the row went, and fails on the old code.
+- The list could not be walked with the keyboard: the panel opens with the caret
+  in the search box, where ↑/↓ and `Enter` did nothing, so entries were reachable
+  with the mouse only. ↑/↓ now move the selection (clamped, scrolling it into
+  view) and `Enter` pastes the selected row — from the search box, in every tab.
+  `Enter` in the trash still never pastes.
 - Click-to-paste stayed broken for the rest of the session whenever `ydotoold`
   died, which it does whenever it cannot open `/dev/uinput` — systemd hits the
   unit's start limit and nothing retries. Every click then reported success

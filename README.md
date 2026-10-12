@@ -63,6 +63,7 @@ ydotool key 29:1 29:0                        # expect: silent, exit 0
 | Close by clicking elsewhere | click outside the panel |
 | Paste an item | click it, or select + `Enter` |
 | Search | type in the search box |
+| Walk the list | **↑** / **↓** — works while the caret is in the search box |
 | Switch tab | **All** / **Starred** / **Not starred** / **Trash** |
 | Star an item | hover the row → **★** (left button) |
 | Delete an item | hover the row → **✕** (right button), or right-click → Move to trash |
