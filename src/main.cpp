@@ -31,6 +31,7 @@
 #include <QJsonObject>
 #include <QKeySequence>
 #include <QLabel>
+#include <QKeyEvent>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
@@ -858,6 +859,10 @@ public:
         m_search = new QLineEdit(root);
         m_search->setPlaceholderText(QStringLiteral("Search clipboard…"));
         m_search->setClearButtonEnabled(true);
+        // Arrow keys and Enter must work while the caret is in here: the panel
+        // opens with focus on the search box, so without this the list can only
+        // be reached with the mouse.
+        m_search->installEventFilter(this);
         lay->addWidget(m_search);
 
         // Tabs + sort. A bare QTabBar (not QTabWidget) is used deliberately:
@@ -1056,6 +1061,39 @@ public:
     QListWidget *trashListForTest()
     {
         return m_trashList;
+    }
+
+    // Keyboard navigation from the search box, driven the way a real key press
+    // arrives so the event filter under test is the one being exercised.
+    void focusSearchForTest()
+    {
+        m_search->setFocus();
+    }
+
+    void pressSearchKeyForTest(int key)
+    {
+        QKeyEvent ev(QEvent::KeyPress, key, Qt::NoModifier);
+        QApplication::sendEvent(m_search, &ev);
+    }
+
+    int currentRowForTest() const
+    {
+        return currentList() ? currentList()->currentRow() : -1;
+    }
+
+    QString searchTextForTest() const
+    {
+        return m_search->text();
+    }
+
+    void setSearchForTest(const QString &text)
+    {
+        m_search->setText(text);
+    }
+
+    void clearCurrentRowForTest()
+    {
+        currentList()->setCurrentRow(-1);
     }
 
     QRect rowRectFor(int row) const
@@ -1841,8 +1879,60 @@ private:
                || watched == m_trashList->viewport();
     }
 
+    // True when the key was handled here and must not reach the search box.
+    bool searchNavigationKey(int key)
+    {
+        QListWidget *lw = currentList();
+        if (!lw || lw->count() == 0) {
+            return false;
+        }
+        if (key == Qt::Key_Down || key == Qt::Key_Up) {
+            const int step = key == Qt::Key_Down ? 1 : -1;
+            const int row = lw->currentRow();
+            // With nothing selected yet, Down starts at the first row and Up at
+            // the last, which is what a list does everywhere else.
+            selectRow(lw, row < 0 ? (step > 0 ? 0 : lw->count() - 1)
+                                  : qBound(0, row + step, lw->count() - 1));
+            return true;
+        }
+        if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            const int row = lw->currentRow();
+            if (row < 0) {
+                selectRow(lw, 0); // the first Enter picks a row, it does not paste
+                return true;
+            }
+            // choose() keeps its own guards, so Enter in the trash still never
+            // pastes a trashed row.
+            choose(lw, lw->item(row));
+            return true;
+        }
+        return false;
+    }
+
+    // Keyboard selection has to move everything the pointer would: the current
+    // row, the scroll position, and the hover highlight (buttons belong to the
+    // pointer, so the keyboard must not light them up on some other row).
+    void selectRow(QListWidget *lw, int row)
+    {
+        lw->setCurrentRow(row);
+        if (QListWidgetItem *it = lw->item(row)) {
+            lw->scrollToItem(it, QAbstractItemView::EnsureVisible);
+        }
+        setHoverRow(-1);
+    }
+
     bool eventFilter(QObject *watched, QEvent *ev) override
     {
+        // The panel opens with the caret in the search box, so arrow keys and
+        // Enter have to reach the list from there — otherwise the entries can
+        // only be reached with the mouse.
+        if (watched == m_search && ev->type() == QEvent::KeyPress) {
+            auto *ke = static_cast<QKeyEvent *>(ev);
+            if (searchNavigationKey(ke->key())) {
+                return true; // consumed: the list has it, not the search box
+            }
+            return false;
+        }
         if (ev->type() == QEvent::MouseMove && isListViewport(watched)) {
             auto *me = static_cast<QMouseEvent *>(ev);
             auto *view = qobject_cast<QAbstractItemView *>(qobject_cast<QWidget *>(watched)->parentWidget());
@@ -2746,6 +2836,71 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
         check(emptied == trashed, "clearing reports every removed trashed entry");
         check(loadTrash().isEmpty(), "the trash sidecar is empty after clearing");
         check(!deck->tabVisibleForTest(3), "the Trash tab hides once the trash is emptied");
+        deck->hide();
+    }
+
+    printf("\n== keyboard navigation while the search box has focus ==\n");
+    {
+        seedSandbox();
+        deck->reload();
+        deck->showForTest();
+        deck->selectTabForTest(0);
+        deck->setSearchForTest(QString());
+        deck->focusSearchForTest();
+
+        // The panel opens with the caret in the search box, so this is the
+        // state a user is actually in when they press the arrow keys.
+        deck->clearCurrentRowForTest();
+        check(deck->currentRowForTest() < 0, "no row is selected before navigating");
+        deck->pressSearchKeyForTest(Qt::Key_Down);
+        check(deck->currentRowForTest() == 0, "Down selects the first row");
+        check(deck->searchTextForTest().isEmpty(), "Down does not type into the search box");
+        deck->pressSearchKeyForTest(Qt::Key_Down);
+        check(deck->currentRowForTest() == 1, "Down moves to the second row");
+        deck->pressSearchKeyForTest(Qt::Key_Up);
+        check(deck->currentRowForTest() == 0, "Up moves back to the first row");
+        deck->pressSearchKeyForTest(Qt::Key_Up);
+        check(deck->currentRowForTest() == 0, "Up stops at the first row instead of wrapping");
+        check(deck->searchTextForTest().isEmpty(), "Up does not type into the search box");
+
+        // Typing must still reach the search box; only the navigation keys are
+        // consumed, so the filter keeps working while arrows are in use.
+        deck->setSearchForTest(QString());
+        check(deck->currentRowForTest() == 0, "the keyboard selection survives a search rebuild");
+        deck->setSearchForTest(QStringLiteral("zzz-no-such-thing"));
+        check(deck->currentRowForTest() == 0 || deck->currentRowForTest() == -1,
+              "a search with no matches leaves nothing to navigate");
+        deck->pressSearchKeyForTest(Qt::Key_Down);
+        check(deck->chooseCountForTest() == 0, "arrow keys never paste");
+        deck->setSearchForTest(QString());
+        deck->showForTest();
+
+        // Enter is the paste key: the first press only picks the row.
+        deck->focusSearchForTest();
+        deck->clearCurrentRowForTest();
+        deck->pressSearchKeyForTest(Qt::Key_Up); // picks the last row, no paste
+        check(deck->currentRowForTest() == deck->testList()->count() - 1,
+              "Up with no selection picks the last row");
+        check(deck->chooseCountForTest() == 0, "picking a row does not paste it");
+        const int before = deck->chooseCountForTest();
+        deck->pressSearchKeyForTest(Qt::Key_Return);
+        check(deck->chooseCountForTest() == before + 1,
+              "Enter pastes the selected row while the search box has focus");
+        deck->showForTest();
+
+        // In the trash, Enter must not paste anything.
+        deck->reload();
+        deck->showForTest();
+        deck->trashByUuidForTest(deck->uuidAtRow(0));
+        deck->selectTabForTest(3);
+        deck->focusSearchForTest();
+        deck->pressSearchKeyForTest(Qt::Key_Down);
+        check(deck->currentRowForTest() == 0, "the trash list is navigable too");
+        const int beforeTrash = deck->chooseCountForTest();
+        deck->pressSearchKeyForTest(Qt::Key_Return);
+        check(deck->chooseCountForTest() == beforeTrash,
+              "Enter does not paste a trashed row");
+        deck->clearTrashForTest();
         deck->hide();
     }
 
