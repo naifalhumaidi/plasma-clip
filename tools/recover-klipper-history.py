@@ -15,16 +15,20 @@ WAL = os.path.expanduser('~/.local/share/klipper/history3.sqlite-wal')
 
 # A row's payload begins right after its mimetypes marker and runs to the next
 # record boundary, which is a uuid followed by the 0x41 ('A') header byte.
-PAYLOAD = re.compile(
-    rb'text/plain,text/plain;charset=utf-8,text/html'  # or the markdown variant
-    rb'(.{0,4000}?)'
-    rb'(?=[0-9a-f]{40}A)',
-    re.S,
-)
+# Built per marker: a payload can only be delimited by the marker it follows,
+# so this must not be hardcoded to one mimetype or the other variants are lost.
+RECORD_END = rb'(?=[0-9a-f]{40}A)'
 MARKERS = [
+    # Order matters: the html variant is listed first because it is a superset
+    # of the plain one, and `found` keeps the first text seen for a uuid.
     b'text/plain,text/plain;charset=utf-8,text/html',
+    b'text/plain,text/plain;charset=utf-8',
     b'text/markdown',
 ]
+
+
+def payload_pattern(marker: bytes) -> re.Pattern:
+    return re.compile(re.escape(marker) + rb'(.{0,4000}?)' + RECORD_END, re.S)
 
 
 def clean(raw: bytes) -> str:
@@ -47,11 +51,12 @@ def main() -> int:
     out_path = sys.argv[1]
     wal = open(WAL, 'rb').read()
 
-    found: dict[str, str] = {}
+    found: dict[str, tuple[str, str]] = {}
     for marker in MARKERS:
+        pattern = payload_pattern(marker)
         for m in re.finditer(re.escape(marker), wal):
             seg = wal[m.end():m.end() + 4000]
-            hit = PAYLOAD.match(marker + seg)
+            hit = pattern.match(marker + seg)
             if not hit:
                 continue
             # The uuid sits a few bytes before the marker in the record header.
@@ -62,7 +67,7 @@ def main() -> int:
             uuid = ids[-1].decode()
             text = clean(hit.group(1))
             if text and len(text) > 1:
-                found.setdefault(uuid, text)
+                found.setdefault(uuid, (text, marker.decode()))
 
     if os.path.exists(out_path):
         os.remove(out_path)
@@ -76,10 +81,9 @@ def main() -> int:
 
     import time
     now = time.time()
-    for i, (uuid, text) in enumerate(found.items()):
+    for i, (uuid, (text, mimetypes)) in enumerate(found.items()):
         con.execute('INSERT OR REPLACE INTO main VALUES (?,?,?,?,?,?)',
-                    (uuid, now - i, now - i,
-                     'text/plain,text/plain;charset=utf-8,text/html', text, 0))
+                    (uuid, now - i, now - i, mimetypes, text, 0))
     con.commit()
     n = con.execute('SELECT COUNT(*) FROM main').fetchone()[0]
     con.close()
