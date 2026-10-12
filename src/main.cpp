@@ -1899,11 +1899,16 @@ private:
                         return true; // consumed: must not also select/paste
                     }
                     if (removeButtonRect(row).contains(p)) {
-                        traceClick(QStringLiteral("REMOVE row=%1 pos=%2,%3")
+                        traceClick(QStringLiteral("TRASH row=%1 pos=%2,%3")
                                        .arg(idx.row())
                                        .arg(p.x())
                                        .arg(p.y()));
-                        deleteEntry(e->uuid);
+                        // ✕ must never destroy anything: it moves the row to the
+                        // Trash tab. It used to hard-delete here, so entries —
+                        // including one copied seconds earlier — vanished with an
+                        // empty trash as the only trace, and every check that
+                        // only asserted "gone from the history" passed anyway.
+                        trashEntry(e->uuid);
                         return true;
                     }
                 }
@@ -2538,6 +2543,16 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
                     }
                 }
                 check(gone, "clicking the REMOVE button moves the entry out of the history");
+                // "Gone from the history" is also true of a hard delete, which is
+                // exactly how ✕ destroyed entries here while every other check
+                // stayed green. Assert where it went.
+                bool inTrash = false;
+                for (const TrashRow &t : loadTrash()) {
+                    if (t.e.uuid == rowUuid) {
+                        inTrash = true;
+                    }
+                }
+                check(inTrash, "clicking the REMOVE button puts the entry in the trash");
 
                 // a click on the row body must not be mistaken for a button
                 deck->showForTest();
@@ -2613,7 +2628,9 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
     printf("\n== trash (restorable deletes) ==\n");
     {
         // The write-path checks above empty the sandbox; start from a
-        // clean copy again so the trash checks see real rows.
+        // clean copy again so the trash checks see real rows. The trash is
+        // emptied too: the ✕ button test above now lands one entry there.
+        deck->clearTrashForTest();
         seedSandbox();
         deck->reload();
         deck->showForTest();
@@ -2640,7 +2657,8 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
             }
         }
         check(!inHistory, "trashing removes the entry from the history");
-        check(loadTrash().size() == 1, "the trashed entry is captured in the trash sidecar");
+        check(loadTrash().size() == 1,
+              "the trash holds only this entry (the ✕ button earlier left one there)");
         check(deck->tabVisibleForTest(3), "the Trash tab appears once something is trashed");
         if (!deck->tabBarFitsForTest()) {
             fprintf(stderr, "       tab bar overflow: %d px over (sizeHint=%d, width=%d)\n",
