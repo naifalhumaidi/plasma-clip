@@ -45,6 +45,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   they move the entry to the Trash tab (renamed *Move to trash*).
 
 ### Fixed
+- Click-to-paste stayed broken for the rest of the session whenever `ydotoold`
+  died, which it does whenever it cannot open `/dev/uinput` — systemd hits the
+  unit's start limit and nothing retries. Every click then reported success
+  while typing nothing. The app now restarts the daemon itself: at startup, on
+  the click that finds it dead (which then asks you to click again), and again
+  inside the paste injection if the daemon died between the click and the key.
+  Attempts are rate limited to one per 30 s, so a permanently unfixable daemon
+  does not bury the message explaining it.
 - Meta+V did not reopen the panel for a while after closing it with an outside
   click. The window's `isVisible()` lags the asynchronous Wayland hide, so the
   toggle thought the panel was still open and hid it again. The intent is now

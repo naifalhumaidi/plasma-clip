@@ -143,6 +143,17 @@ process wait per click. Do not guess socket paths either —
 `QStandardPaths::RuntimeLocation` resolves differently under the offscreen
 platform the tests use, so a path check is wrong in exactly the place you test.
 
+Probing is not enough on its own, though: the daemon can die *after* the app
+starts, and nothing restarts it. On this machine `ydotool.service` sat
+"enabled but dead" for two days, so every click reported success and typed
+nothing — the symptom users describe as "clicking an item is broken".
+Restart it from the app (startup, on a click that finds it dead, and again
+inside `injectPaste()` if it died between the click and the injection), and
+rate-limit the attempts: when the real cause is a missing `/dev/uinput`
+permission, retrying on every click only buries the message that explains it.
+Keep the rate-limit rule a pure function so the suite can test it without
+touching the machine's daemon.
+
 ### Frameless always-on-top popups render dialogs behind themselves
 
 `Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint` will draw

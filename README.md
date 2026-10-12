@@ -169,10 +169,13 @@ stale grab lives in `plasmashell`'s memory and only clears on restart.
 `pasteDelayMs`.
 
 **"Copied, but ydotoold is not running".** The `ydotool` client is installed but
-its background daemon is dead, so nothing can be typed for you. Start it with
-`systemctl --user start ydotool.service`. If it will not stay up, the journal
-will say `failed to open uinput device`, which means your user cannot write to
-`/dev/uinput` — see the note in `install.sh`.
+its background daemon is dead, so nothing can be typed for you. The app restarts
+it for you when it finds it dead — the first click says it is starting the
+daemon and asks you to click again — and it also checks at startup. Start it by
+hand with `systemctl --user start ydotool.service` if you would rather not wait.
+If it will not stay up, the journal will say `failed to open uinput device`,
+which means your user cannot write to `/dev/uinput` — see the note in
+`install.sh`.
 
 **Pasting goes to the wrong window.** Wayland decides focus; add a little more
 `pasteDelayMs`.
