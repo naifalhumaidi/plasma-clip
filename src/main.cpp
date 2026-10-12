@@ -319,7 +319,7 @@ bool haveYdotool()
 // the socket and the daemon are alive. Guessing socket paths is not reliable —
 // ydotoold listens on $XDG_RUNTIME_DIR/.ydotool_socket, and QStandardPaths
 // resolves that differently under the offscreen platform the tests run on.
-bool ydotoolReady()
+bool ydotoolReady(bool force = false)
 {
     // Cache the verdict: this runs in the click path, and spawning a process and
     // waiting on it there would stall the UI for the length of the probe. A dead
@@ -328,7 +328,7 @@ bool ydotoolReady()
     static bool cached = false;
     static qint64 probedAt = 0;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    if (probedAt != 0 && now - probedAt < 2000) {
+    if (!force && probedAt != 0 && now - probedAt < 2000) {
         return cached;
     }
 
@@ -342,6 +342,38 @@ bool ydotoolReady()
     }
     probedAt = now;
     return cached;
+}
+
+// Restarting the daemon on every click would be its own kind of noise when the
+// real problem is a missing /dev/uinput permission, so attempts are rate
+// limited. Split out as a pure function so the rule is testable without ever
+// touching the machine's real daemon.
+constexpr qint64 YDOTOOL_RESTART_BACKOFF_MS = 30000;
+
+bool shouldRestartYdotool(bool ready, qint64 msSinceLastAttempt)
+{
+    return !ready && msSinceLastAttempt >= YDOTOOL_RESTART_BACKOFF_MS;
+}
+
+// The daemon can die at any time — a reboot, a failed uinput open, an explicit
+// `systemctl --user stop`. Nothing restarts it afterwards, so click-to-paste
+// stays broken for the rest of the session and every click reports success
+// while typing nothing. That happened here: the unit had been "enabled but
+// dead" for two days. Bring it back instead of only complaining about it.
+bool restartYdotool(bool force = false)
+{
+    static qint64 lastAttempt = 0;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (!haveYdotool()) {
+        return false;
+    }
+    if (!shouldRestartYdotool(ydotoolReady(force), now - lastAttempt)) {
+        return false;
+    }
+    lastAttempt = now;
+    return QProcess::startDetached(QStringLiteral("systemctl"),
+                                   {QStringLiteral("--user"), QStringLiteral("restart"),
+                                    QStringLiteral("ydotool.service")});
 }
 
 QString flat(const QString &text, int maxChars)
@@ -2136,10 +2168,17 @@ private:
             return;
         }
         if (!ydotoolReady()) {
-            traceClick(QStringLiteral("PASTE-BLOCKED ydotoold unavailable"));
-            flash(QStringLiteral("Copied, but ydotoold is not running - cannot paste.\n"
-                                 "Start it with: systemctl --user start ydotool"));
-            QTimer::singleShot(4000, this, [this] { hide(); });
+            // Kick the daemon rather than only reporting it dead: the user's
+            // next click then pastes instead of failing again.
+            const bool restarting = restartYdotool();
+            traceClick(QStringLiteral("PASTE-BLOCKED ydotoold unavailable restarting=%1")
+                           .arg(restarting ? 1 : 0));
+            flash(restarting
+                      ? QStringLiteral("Copied. ydotoold was not running - starting it now.\n"
+                                       "Click the item again to paste.")
+                      : QStringLiteral("Copied, but ydotoold is not running - cannot paste.\n"
+                                       "Start it with: systemctl --user start ydotool"));
+            QTimer::singleShot(restarting ? 6000 : 4000, this, [this] { hide(); });
             return;
         }
         hide();
@@ -2151,6 +2190,18 @@ private:
         if (isVisible()) {
             return;
         }
+        // The daemon can be dead here even when it answered the click a moment
+        // ago, and the alternative is closing the panel and typing nothing.
+        // Probe for real, and try exactly once more after a restart.
+        if (!ydotoolReady(true) && restartYdotool(true)) {
+            QTimer::singleShot(800, this, [this] { sendPaste(); });
+            return;
+        }
+        sendPaste();
+    }
+
+    void sendPaste()
+    {
         QProcess::startDetached(QStringLiteral("ydotool"),
                                 {QStringLiteral("key"), QStringLiteral("29:1"), QStringLiteral("47:1"),
                                  QStringLiteral("29:0"), QStringLiteral("47:0")});
@@ -2786,6 +2837,17 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
               .isValid(),
           "Klipper reachable on D-Bus");
 
+    // Restart policy for the daemon. Pure function, so this never touches the
+    // machine's real ydotoold.
+    check(!shouldRestartYdotool(true, 60000),
+          "a working ydotoold is never restarted");
+    check(shouldRestartYdotool(false, 60000),
+          "a dead ydotoold is restarted (this is the reported paste bug)");
+    check(!shouldRestartYdotool(false, 0),
+          "restarts are rate limited, so one dead daemon is not restarted per click");
+    check(!shouldRestartYdotool(false, YDOTOOL_RESTART_BACKOFF_MS - 1),
+          "the restart backoff holds until it has elapsed");
+
     // Report the total rather than letting the docs quote a number. Some checks are
 // conditional on fixture state, so the count legitimately varies.
     printf("\n%s  (%d/%d checks, %d failure%s)\n\n",
@@ -2853,6 +2915,13 @@ int main(int argc, char **argv)
     }
 
     auto *deck = new Deck;
+
+    // A dead ydotoold disables click-to-paste for the whole session, and the
+    // only symptom is every click reporting success while typing nothing.
+    // Repair it at startup rather than waiting for that first failed click.
+    if (restartYdotool(true)) {
+        traceClick(QStringLiteral("STARTUP restarting ydotoold"));
+    }
 
     auto *action = new QAction(QStringLiteral("Show Clipboard Deck"), deck);
     action->setObjectName(QStringLiteral("show-clipboard"));
