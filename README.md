@@ -103,11 +103,13 @@ Notes:
 ### Read or edit an entry
 
 Hover a row and click **✎** to see the whole text, with newlines intact. You can
-fix a typo there and press **Save** (or Ctrl+Enter). **Esc** or clicking the
-dimmed area around the card closes it without saving. The edited text is written
-back into that entry only — the clipboard is not touched. The button is there on
-trashed rows too: the correction lands in the trash, so restoring afterwards
-brings back the fixed text.
+fix a typo there and press **Save** (or Ctrl+Enter). Nothing else exits the
+editor: **Esc** and clicks on the dimmed area leave the draft alone, and Meta+V
+mid-edit keeps panel and editor exactly where they are. Only **Cancel** (or
+Save) closes it. The edited text is written back into that entry only — the
+clipboard is not touched. The button is there on trashed rows too: the
+correction lands in the trash, so restoring afterwards brings back the fixed
+text.
 
 ![Editing an entry](docs/preview-edit.png)
 

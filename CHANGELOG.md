@@ -64,10 +64,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - The editor card ignored clicks on the dimmed area around it, and closing the
   panel with the editor open resurrected the editor on the next Meta+V. An
-  outside click now closes the editor (the row underneath is untouched), the
-  editor never outlives the panel, and Esc inside the editor closes the editor
-  instead of the panel — the window-level Esc shortcut used to fire as well and
-  hide everything.
+  outside click is now swallowed (the row underneath is untouched), the editor
+  never outlives the panel, and neither Esc nor Meta+V can discard an edit in
+  progress: Esc does nothing while editing, Meta+V keeps panel and editor in
+  place. Only Cancel or Save exits the editor. (The window-level Esc shortcut
+  used to fire as well and hide everything.)
 - Hovering a row no longer shows the full text in a tooltip. That tooltip is a
   separate OS window, and it intermittently came up as a **black box** over the
   panel. It was also the one thing in the panel no test could reach, so the

@@ -995,12 +995,10 @@ public:
                 m_overlay->hide(); // cancel the confirm first
                 return;
             }
-            // Esc inside the editor closes the editor, not the panel. Without
-            // this the window shortcut below fires as well and hides the whole
-            // panel — reopening it then resurrected the editor, and in the
-            // suite it left the panel hidden so no later overlay could show.
+            // Esc inside the editor does nothing at all: the editor exits only
+            // through Cancel or Save, so the window shortcut must not fire
+            // either and hide the panel from under an edit in progress.
             if (m_editOverlay && m_editOverlay->isVisible()) {
-                closeEditor();
                 return;
             }
             hide();
@@ -1604,6 +1602,18 @@ struct DoubleClickResult {
         // exit isVisible() can still report true. Trusting it here made
         // the next Meta+V "hide" the already-hidden panel instead of
         // reopening it — the reported "cannot open for a while".
+        // Mid-edit, Meta+V must not hide the panel out from under the editor:
+        // the user pressed it to look at the panel, and hiding would bury an
+        // edit that only Cancel or Save may discard. Leave everything exactly
+        // where it is — no tab reset, no search clear, no reload — just make
+        // sure we are on top.
+        if (m_editOverlay && m_editOverlay->isVisible()) {
+            traceClick(QStringLiteral("TOGGLE during editor -> keep"));
+            show();
+            raise();
+            activateWindow();
+            return;
+        }
         if (m_wantVisible) {
             hide();
             return;
@@ -2019,7 +2029,7 @@ private:
             return; // cleared between the click and here; nothing to edit
         }
         m_editUuid = uuid;
-        m_editTitle->setText(QStringLiteral("Edit entry — Ctrl+Enter saves, Esc cancels"));
+        m_editTitle->setText(QStringLiteral("Edit entry — Ctrl+Enter saves, Cancel discards"));
         m_editText->setPlainText(target->text);
         // Cursor at the start, nothing selected: an accidental keystroke must
         // insert, never wipe the whole entry.
@@ -2242,17 +2252,18 @@ private:
             return false;
         }
         if (watched == m_editOverlay && ev->type() == QEvent::MouseButtonPress) {
-            // The overlay covers the panel, so a press that lands on it is by
-            // definition outside the card: the user clicked the dimmed area, so
-            // treat it as "close", exactly like Esc. Consumed, so the click
-            // cannot also reach the row underneath and paste or trash it.
-            closeEditor();
+            // Swallowed and nothing more: the press is outside the card, but
+            // the editor discards nothing except through Cancel or Save, so an
+            // outside click must neither close it (unsaved edits would be
+            // lost) nor reach the row underneath (it would paste or trash it).
             return true;
         }
         if (watched == m_editText && ev->type() == QEvent::KeyPress) {
             auto *ke = static_cast<QKeyEvent *>(ev);
             if (ke->key() == Qt::Key_Escape) {
-                closeEditor();
+                // Swallowed: Cancel is the only way out of the editor, so Esc
+                // must not discard an edit in progress. (The window-level Esc
+                // shortcut below is silenced the same way while editing.)
                 return true;
             }
             if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
@@ -3002,23 +3013,37 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
                 check(deck->editorTextForTest() == deck->rowTextForTest(row),
                       "the editor shows the entry's text verbatim, newlines and all");
                 deck->pressEditorKeyForTest(Qt::Key_Escape);
-                check(!deck->editorVisibleForTest(), "Esc closes the editor");
+                check(deck->editorVisibleForTest(), "Esc leaves the editor open");
+                check(deck->editorTextForTest() == deck->rowTextForTest(row),
+                      "Esc leaves the draft untouched");
 
-                // Clicking outside the card closes it, and the click must not
-                // reach the row underneath: the overlay covers the whole panel.
+                // An outside click is swallowed: it must neither close the
+                // editor (the draft would be lost) nor reach the row
+                // underneath. The overlay covers the whole panel.
                 Deck::clickAt(vp, editButtonRect(rect).center());
                 check(deck->editorVisibleForTest(), "the editor reopened for the outside-click check");
+                deck->setEditorTextForTest(QStringLiteral("unsaved draft"));
                 const int beforeOutside = deck->chooseCountForTest();
                 const QString textBeforeOutside = deck->rowTextForTest(row);
                 deck->clickEditorOverlayForTest();
-                check(!deck->editorVisibleForTest(),
-                      "clicking outside the editor closes it");
+                check(deck->editorVisibleForTest(),
+                      "clicking outside the editor leaves it open");
+                check(deck->editorTextForTest() == QStringLiteral("unsaved draft"),
+                      "clicking outside keeps the draft");
                 check(deck->editorOverlayPanelKeptForTest(),
-                      "closing the editor leaves the panel open");
+                      "the panel stays open too");
                 check(deck->chooseCountForTest() == beforeOutside,
                       "that click does not paste the row underneath");
                 check(deck->rowTextForTest(row) == textBeforeOutside,
                       "that click does not remove the row underneath");
+
+                // Meta+V mid-edit keeps everything in place instead of hiding
+                // the panel from under the draft.
+                deck->toggle();
+                check(deck->isVisible(), "Meta+V mid-edit keeps the panel");
+                check(deck->editorVisibleForTest(), "Meta+V mid-edit keeps the editor");
+                check(deck->editorTextForTest() == QStringLiteral("unsaved draft"),
+                      "Meta+V mid-edit keeps the draft");
 
                 // Closing the panel must take the editor with it, or reopening
                 // the panel shows an editor the user already dismissed.
