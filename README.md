@@ -103,8 +103,9 @@ Notes:
 ### Read or edit an entry
 
 Hover a row and click **✎** to see the whole text, with newlines intact. You can
-fix a typo there and press **Save** (or Ctrl+Enter); **Esc** leaves it alone. The
-edited text is written back into that entry only — the clipboard is not touched.
+fix a typo there and press **Save** (or Ctrl+Enter). **Esc** or clicking the
+dimmed area around the card closes it without saving. The edited text is written
+back into that entry only — the clipboard is not touched.
 
 ![Editing an entry](docs/preview-edit.png)
 
