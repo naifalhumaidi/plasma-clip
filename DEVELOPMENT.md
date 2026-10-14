@@ -57,8 +57,8 @@ QT_QPA_PLATFORM=offscreen ./custom-clipboard --screenshot out.png --state hover
 ```
 
 States: `all`, `starred`, `notstarred`, `search`, `alpha`, `trash`, `new`,
-`hover`, `confirm`. The tab states need a fixture with content in that tab —
-`docs/make-screenshots.sh` builds one.
+`hover`, `edit`, `confirm`. The tab states need a fixture with content in that
+tab — `docs/make-screenshots.sh` builds one.
 
 ## Testing
 

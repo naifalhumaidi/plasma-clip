@@ -24,7 +24,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Relative timestamps per row ("just now", "19 min ago", "1 h ago").
 - Image thumbnails, including copied image *files* (`file://` URIs) which Klipper
   records as text.
-- Per-row star and remove buttons, revealed on hover.
+- Per-row star, edit and remove buttons, revealed on hover.
+- **✎ opens the full text** of an entry in a multi-line card, editable: Save
+  (Ctrl+Enter) writes the corrected text back into that entry, Esc cancels.
+  Hovering a row no longer shows a tooltip — see Fixed below.
 - Right-click menu: Star/Unstar, Copy only, Move to trash (Restore / Restore and
   star / Copy only on the Trash tab).
 - **＋ New** — add an entry to the clipboard from an inline field.
@@ -57,6 +60,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   they move the entry to the Trash tab (renamed *Move to trash*).
 
 ### Fixed
+- Hovering a row no longer shows the full text in a tooltip. That tooltip is a
+  separate OS window, and it intermittently came up as a **black box** over the
+  panel. It was also the one thing in the panel no test could reach, so the
+  replacement — the **✎** button — is fully covered by the suite.
+- Clear now moves the unstarred entries to the Trash tab instead of deleting
+  them (see Changed).
 - The row ✕ button destroyed entries instead of moving them to the **Trash**
   tab: it called the hard delete while the right-click action trashed. Entries
   vanished with an empty trash as the only trace, including ones copied seconds

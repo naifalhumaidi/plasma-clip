@@ -65,8 +65,9 @@ ydotool key 29:1 29:0                        # expect: silent, exit 0
 | Search | type in the search box |
 | Walk the list | **↑** / **↓** — works while the caret is in the search box |
 | Switch tab | **All** / **Starred** / **Not starred** / **Trash** |
-| Star an item | hover the row → **★** (left button) |
-| Delete an item | hover the row → **✕** (right button), or right-click → Move to trash |
+| Star an item | hover the row → **★** |
+| Read or fix an entry | hover the row → **✎** — opens the full text, editable |
+| Delete an item | hover the row → **✕**, or right-click → Move to trash |
 | Restore from trash | on the **Trash** tab → **↩** (plain), **★** (restores it starred) |
 | Copy without pasting | right-click → Copy only |
 | Add an entry | **＋ New**, type, `Enter` |
@@ -98,6 +99,14 @@ Notes:
   PNG/JPG/etc.) are detected and shown with a real thumbnail and filename.
 - Timestamps are relative: "just now", "19 min ago", "1 h ago".
 - The popup always reopens on the **All** tab with the search box cleared.
+
+### Read or edit an entry
+
+Hover a row and click **✎** to see the whole text, with newlines intact. You can
+fix a typo there and press **Save** (or Ctrl+Enter); **Esc** leaves it alone. The
+edited text is written back into that entry only — the clipboard is not touched.
+
+![Editing an entry](docs/preview-edit.png)
 
 ### Clear confirmation
 
