@@ -27,7 +27,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Per-row star, edit and remove buttons, revealed on hover.
 - **✎ opens the full text** of an entry in a multi-line card, editable: Save
   (Ctrl+Enter) writes the corrected text back into that entry, Esc cancels.
-  Hovering a row no longer shows a tooltip — see Fixed below.
+  Hovering a row no longer shows a tooltip — see Fixed below. The button is
+  present on trashed rows too, filling the gap between ↩ and ☆; the correction
+  is written into the trash sidecar, so restoring brings back the fixed text.
 - Right-click menu: Star/Unstar, Copy only, Move to trash (Restore / Restore and
   star / Copy only on the Trash tab).
 - **＋ New** — add an entry to the clipboard from an inline field.

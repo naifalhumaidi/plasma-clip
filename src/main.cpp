@@ -755,13 +755,11 @@ public:
             chip.setAlpha(selected ? 60 : 90);
             p->setPen(Qt::NoPen);
             p->setBrush(chip);
-            // No ✎ chip in the trash: a trashed row is not part of the history,
-            // so there is nothing to correct there yet. The slot stays empty,
-            // which keeps the button geometry identical in every view.
-            QVector<QRect> chips{editButtonRect(row), starButtonRect(row), removeButtonRect(row)};
-            if (trashView) {
-                chips.removeFirst();
-            }
+            // All three chips in every view, trash included: the ✎ slot used to
+            // stay empty in the trash, which left a dead gap between ↩ and ☆.
+            // A trashed row's text is editable too — it is written back into
+            // the sidecar, so a later restore brings back the corrected text.
+            const QVector<QRect> chips{editButtonRect(row), starButtonRect(row), removeButtonRect(row)};
             for (const QRect &r : chips) {
                 p->drawRoundedRect(r.adjusted(0, 0, -1, -1), 6, 6);
             }
@@ -769,9 +767,7 @@ public:
             bf.setPointSizeF(f.pointSizeF() + 1);
             p->setFont(bf);
             p->setPen(fg);
-            if (!trashView) {
-                p->drawText(editButtonRect(row), Qt::AlignCenter, QStringLiteral("✎"));
-            }
+            p->drawText(editButtonRect(row), Qt::AlignCenter, QStringLiteral("✎"));
             // In the trash the star is an action ("restore it starred"), not a
             // state marker, so it is drawn empty even for an entry that was
             // starred when it was thrown away.
@@ -1995,6 +1991,7 @@ private:
         m_search->setFocus();
         m_editOverlay->hide();
         m_editUuid.clear();
+        m_editingTrash = false;
     }
 
     void openEditor(const QString &uuid)
@@ -2006,7 +2003,19 @@ private:
                 break;
             }
         }
+        // A trashed uuid is not in the history; it lives in the sidecar.
+        // Found there, the editor writes back into the sidecar on Save.
+        m_editingTrash = target == nullptr;
+        if (m_editingTrash) {
+            for (const TrashRow &t : m_store.trash) {
+                if (t.e.uuid == uuid) {
+                    target = &t.e;
+                    break;
+                }
+            }
+        }
         if (!target) {
+            m_editingTrash = false;
             return; // cleared between the click and here; nothing to edit
         }
         m_editUuid = uuid;
@@ -2022,13 +2031,34 @@ private:
     }
 
     // Writes the corrected text back into that one entry. The clipboard itself is
-    // untouched: this repairs history, it does not copy anything.
+    // untouched: this repairs history, it does not copy anything. A trashed
+    // entry is repaired in the sidecar instead, so restoring it later brings
+    // back the corrected text.
     void saveEdit()
     {
         const QString text = m_editText->toPlainText();
         const QString uuid = m_editUuid;
+        const bool toTrash = m_editingTrash;
         closeEditor();
         if (uuid.isEmpty()) {
+            return;
+        }
+        if (toTrash) {
+            QVector<TrashRow> trash = loadTrash();
+            bool ok = false;
+            for (TrashRow &t : trash) {
+                if (t.e.uuid == uuid) {
+                    t.e.text = text;
+                    ok = true;
+                    break;
+                }
+            }
+            if (ok) {
+                saveTrash(trash);
+            }
+            reload();
+            flash(ok ? QStringLiteral("Entry updated.")
+                     : QStringLiteral("Entry is gone; nothing to update."));
             return;
         }
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("ccedit"));
@@ -2259,7 +2289,9 @@ private:
                                      : m_store.entryFor(idx.data(Qt::UserRole).toInt());
                 if (e) {
                     const QPoint p = me->pos();
-                    if (!trashView && editButtonRect(row).contains(p)) {
+                    // ✎ works in the trash too: openEditor/saveEdit know a
+                    // trashed uuid belongs to the sidecar, not to Klipper.
+                    if (editButtonRect(row).contains(p)) {
                         traceClick(QStringLiteral("EDIT row=%1 pos=%2,%3")
                                        .arg(idx.row())
                                        .arg(p.x())
@@ -2639,6 +2671,7 @@ private:
     QPlainTextEdit *m_editText = nullptr;
     QPushButton *m_editSave = nullptr;
     QString m_editUuid;
+    bool m_editingTrash = false; // the open editor targets the sidecar, not Klipper
     QComboBox *m_sort = nullptr;
     RowDelegate *m_delegate = nullptr;
     Store m_store;
@@ -3240,6 +3273,46 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
             }
         }
         check(starredBack2 && starredFlag, "the star button restores a trashed entry as starred");
+        deck->clearTrashForTest();
+
+        // The ✎ button in the trash: same slot as in the history, no gap.
+        // A real click opens the trashed text, Save writes it into the
+        // sidecar, and restoring afterwards brings back the corrected text.
+        deck->reload();
+        deck->showForTest();
+        const QString editTrashUuid = deck->uuidAtRow(deck->firstNonStarredRow());
+        deck->trashByUuidForTest(editTrashUuid);
+        deck->selectTabForTest(3);
+        QListWidget *tl5 = deck->trashListForTest();
+        if (tl5->count() > 0) {
+            const QRect er = tl5->visualItemRect(tl5->item(0));
+            Deck::clickAt(tl5->viewport(), editButtonRect(er).center());
+        }
+        check(deck->editorVisibleForTest(), "clicking ✎ in the trash opens the editor");
+        bool trashedTextShown = false;
+        for (const TrashRow &t : loadTrash()) {
+            if (t.e.uuid == editTrashUuid) {
+                trashedTextShown = deck->editorTextForTest() == t.e.text;
+            }
+        }
+        check(trashedTextShown, "the editor shows the trashed text");
+        deck->setEditorTextForTest(QStringLiteral("corrected while trashed"));
+        deck->saveEditForTest();
+        bool sidecarRewritten = false;
+        for (const TrashRow &t : loadTrash()) {
+            if (t.e.uuid == editTrashUuid) {
+                sidecarRewritten = t.e.text == QStringLiteral("corrected while trashed");
+            }
+        }
+        check(sidecarRewritten, "Save writes the correction into the trash sidecar");
+        deck->restoreByUuidForTest(editTrashUuid, false);
+        bool correctedBack = false;
+        for (const Entry &e : readHistory()) {
+            if (e.uuid == editTrashUuid) {
+                correctedBack = e.text == QStringLiteral("corrected while trashed");
+            }
+        }
+        check(correctedBack, "restoring brings back the corrected text");
         deck->clearTrashForTest();
 
         // The star button in the trash restores AND stars (user request).
