@@ -999,6 +999,14 @@ public:
                 m_overlay->hide(); // cancel the confirm first
                 return;
             }
+            // Esc inside the editor closes the editor, not the panel. Without
+            // this the window shortcut below fires as well and hides the whole
+            // panel — reopening it then resurrected the editor, and in the
+            // suite it left the panel hidden so no later overlay could show.
+            if (m_editOverlay && m_editOverlay->isVisible()) {
+                closeEditor();
+                return;
+            }
             hide();
         });
     }
@@ -1170,6 +1178,22 @@ public:
     void saveEditForTest()
     {
         saveEdit();
+    }
+
+
+    // A press on the dimmed overlay, i.e. outside the card.
+    void clickEditorOverlayForTest()
+    {
+        Deck::clickAt(m_editOverlay, QPoint(4, 4));
+    }
+
+    // Pinning the panel-open invariant: closing the editor (Esc, outside
+    // click, Cancel, Save) must never hide the panel as a side effect. Hiding
+    // the overlay while it holds focus used to drop focus out of the window,
+    // which arrived as a deactivation and closed the panel too.
+    bool editorOverlayPanelKeptForTest() const
+    {
+        return isVisible();
     }
 
     QRect rowRectFor(int row) const
@@ -1618,6 +1642,12 @@ struct DoubleClickResult {
         if (!visible) {
             // Our own hide must never be mistaken for an outside click.
             m_deactivateArmed = false;
+            // Any open card goes with the panel. Leaving the editor up meant
+            // reopening the panel showed the editor again, over an entry the
+            // user had already dismissed by closing the panel.
+            if (m_editOverlay) {
+                closeEditor();
+            }
         }
         QWidget::setVisible(visible);
     }
@@ -1653,6 +1683,13 @@ protected:
         // buttons on it is not an outside click.
         if (m_overlay && m_overlay->isVisible()) {
             traceClick(QStringLiteral("deactivated during confirm -> keep"));
+            return;
+        }
+        // Same for the editor card: the text area takes focus when it opens, and
+        // that focus change arrives as a deactivation. Hiding here closed the
+        // editor the user had just opened.
+        if (m_editOverlay && m_editOverlay->isVisible()) {
+            traceClick(QStringLiteral("deactivated during editor -> keep"));
             return;
         }
         traceClick(QStringLiteral("deactivated outside -> hide"));
@@ -1943,9 +1980,21 @@ private:
         ov->addWidget(card);
         ov->addStretch(1);
 
-        connect(cancel, &QPushButton::clicked, this, [this] { m_editOverlay->hide(); });
+        connect(cancel, &QPushButton::clicked, this, [this] { closeEditor(); });
         connect(m_editSave, &QPushButton::clicked, this, &Deck::saveEdit);
+        m_editOverlay->installEventFilter(this);
         m_editOverlay->hide();
+    }
+
+    void closeEditor()
+    {
+        // Focus comes home BEFORE the overlay hides: hiding it while it holds
+        // focus drops focus out of our window, which arrives as a deactivation
+        // and hides the whole panel too. Esc or an outside click would then
+        // close not just the editor but the panel you were looking at.
+        m_search->setFocus();
+        m_editOverlay->hide();
+        m_editUuid.clear();
     }
 
     void openEditor(const QString &uuid)
@@ -1978,8 +2027,7 @@ private:
     {
         const QString text = m_editText->toPlainText();
         const QString uuid = m_editUuid;
-        m_editOverlay->hide();
-        m_editUuid.clear();
+        closeEditor();
         if (uuid.isEmpty()) {
             return;
         }
@@ -2163,10 +2211,18 @@ private:
             }
             return false;
         }
+        if (watched == m_editOverlay && ev->type() == QEvent::MouseButtonPress) {
+            // The overlay covers the panel, so a press that lands on it is by
+            // definition outside the card: the user clicked the dimmed area, so
+            // treat it as "close", exactly like Esc. Consumed, so the click
+            // cannot also reach the row underneath and paste or trash it.
+            closeEditor();
+            return true;
+        }
         if (watched == m_editText && ev->type() == QEvent::KeyPress) {
             auto *ke = static_cast<QKeyEvent *>(ev);
             if (ke->key() == Qt::Key_Escape) {
-                m_editOverlay->hide();
+                closeEditor();
                 return true;
             }
             if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
@@ -2914,6 +2970,31 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
                       "the editor shows the entry's text verbatim, newlines and all");
                 deck->pressEditorKeyForTest(Qt::Key_Escape);
                 check(!deck->editorVisibleForTest(), "Esc closes the editor");
+
+                // Clicking outside the card closes it, and the click must not
+                // reach the row underneath: the overlay covers the whole panel.
+                Deck::clickAt(vp, editButtonRect(rect).center());
+                check(deck->editorVisibleForTest(), "the editor reopened for the outside-click check");
+                const int beforeOutside = deck->chooseCountForTest();
+                const QString textBeforeOutside = deck->rowTextForTest(row);
+                deck->clickEditorOverlayForTest();
+                check(!deck->editorVisibleForTest(),
+                      "clicking outside the editor closes it");
+                check(deck->editorOverlayPanelKeptForTest(),
+                      "closing the editor leaves the panel open");
+                check(deck->chooseCountForTest() == beforeOutside,
+                      "that click does not paste the row underneath");
+                check(deck->rowTextForTest(row) == textBeforeOutside,
+                      "that click does not remove the row underneath");
+
+                // Closing the panel must take the editor with it, or reopening
+                // the panel shows an editor the user already dismissed.
+                Deck::clickAt(vp, editButtonRect(rect).center());
+                check(deck->editorVisibleForTest(), "the editor is open before the panel closes");
+                deck->hide();
+                deck->showForTest();
+                check(!deck->editorVisibleForTest(),
+                      "reopening the panel does not bring the editor back");
 
                 // Editing and saving rewrites that entry's text.
                 Deck::clickAt(vp, editButtonRect(rect).center());
