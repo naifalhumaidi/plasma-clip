@@ -751,13 +751,17 @@ public:
             bf.setPointSizeF(f.pointSizeF() + 1);
             p->setFont(bf);
             p->setPen(fg);
-            p->drawText(starButtonRect(row), Qt::AlignCenter, e && e->starred ? QStringLiteral("★") : QStringLiteral("☆"));
+            // In the trash the star is an action ("restore it starred"), not a
+            // state marker, so it is drawn empty even for an entry that was
+            // starred when it was thrown away.
+            p->drawText(starButtonRect(row), Qt::AlignCenter,
+                        (e && e->starred && !trashView) ? QStringLiteral("★") : QStringLiteral("☆"));
             // In the trash, the outer button brings the entry
             // back instead of removing it for good.
             p->drawText(removeButtonRect(row),
                         Qt::AlignCenter,
                         trashView ? QStringLiteral("↩") : QStringLiteral("✕"));
-        } else if (e && e->starred) {
+        } else if (e && e->starred && !trashView) {
             QFont sf = f;
             sf.setPointSizeF(f.pointSizeF() + 1);
             p->setFont(sf);
@@ -1133,6 +1137,18 @@ public:
         return -1;
     }
 
+    // Used by the trash checks: a trashed *starred* entry is the case where
+    // "look normal in the trash" and "restore unstarred vs starred" differ.
+    QString firstStarredUuidForTest() const
+    {
+        for (int i = 0; i < m_list->count(); ++i) {
+            if (starredAtRow(i)) {
+                return uuidAtRow(i);
+            }
+        }
+        return QString();
+    }
+
     // A real double-click: Qt delivers the second press as MouseButtonDblClick,
 // NOT MouseButtonPress. Synthesising two plain presses would hide that.
 static int doubleClickAt(QWidget *target, const QPoint &pos)
@@ -1372,6 +1388,11 @@ struct DoubleClickResult {
         trashEntry(uuid);
     }
 
+    void restoreByUuidForTest(const QString &uuid, bool star)
+    {
+        restoreEntry(uuid, star);
+    }
+
     int clearTrashForTest()
     {
         return clearTrash();
@@ -1379,29 +1400,57 @@ struct DoubleClickResult {
 
     // Deletes every unstarred entry, keeping starred ones. Returns how many
     // were removed. Starred rows are explicitly preserved.
+    // Clears the unstarred entries into the TRASH, not into the void: Clear was
+    // the last remaining path that destroyed rows outright, so a mis-click on a
+    // button that clears *everything* unprotected was unrecoverable. Batched in
+    // one transaction and one sidecar write — calling trashEntry() per row would
+    // re-read the whole database and rewrite the sidecar for every entry, which
+    // is seconds of work on a large history.
     int clearUnstarred()
     {
+        QVector<TrashRow> doomed;
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("ccclear"));
         db.setDatabaseName(klipperDir() + QStringLiteral("/history3.sqlite"));
-        int removed = 0;
         if (db.open()) {
             QSqlQuery q(db);
             q.exec(QStringLiteral("PRAGMA busy_timeout=2000"));
             const QString where = QStringLiteral(" WHERE starred=0 OR starred IS NULL");
-
-            if (q.exec(QStringLiteral("SELECT COUNT(*) FROM main") + where) && q.next()) {
-                removed = q.value(0).toInt();
+            if (q.exec(QStringLiteral("SELECT uuid, added_time, last_used_time, mimetypes, text, starred"
+                                       " FROM main") + where)) {
+                while (q.next()) {
+                    TrashRow row;
+                    row.e.uuid = q.value(0).toString();
+                    row.added = q.value(1).toLongLong();
+                    row.last = q.value(2).toLongLong();
+                    row.e.mimetypes = q.value(3).toString();
+                    row.e.text = q.value(4).toString();
+                    row.e.starred = q.value(5).toInt() != 0;
+                    row.e.when = qMax(row.added, row.last);
+                    row.e.isImage = row.e.mimetypes.contains(QLatin1String("image/"));
+                    doomed.append(row);
+                }
             }
-            // aux rows first, otherwise they become orphans
-            q.prepare(QStringLiteral("DELETE FROM aux WHERE uuid IN (SELECT uuid FROM main") + where + QStringLiteral(")"));
-            q.exec();
-            q.prepare(QStringLiteral("DELETE FROM main") + where);
-            q.exec();
+            if (!doomed.isEmpty()) {
+                // Only the main rows go. aux rows are left for a possible
+                // restore — exactly as a single ✕ does — and are purged when
+                // the trash itself is emptied.
+                q.prepare(QStringLiteral("DELETE FROM main") + where);
+                q.exec();
+            }
             db.close();
         }
         QSqlDatabase::removeDatabase(QStringLiteral("ccclear"));
+
+        if (!doomed.isEmpty()) {
+            QVector<TrashRow> trash = loadTrash();
+            // Newest first, matching how the trash already reads.
+            for (const TrashRow &row : doomed) {
+                trash.prepend(row);
+            }
+            saveTrash(trash);
+        }
         reload();
-        return removed;
+        return int(doomed.size());
     }
 
     int unstarredCount() const
@@ -2142,9 +2191,13 @@ private:
     }
 
     // Puts a trashed entry back into Klipper with its
-    // original timestamps. With star=true the entry also
-    // comes back starred — that is what the star button
-    // in the trash tab does.
+    // original timestamps. The two trash buttons mean exactly
+    // two things: the outer one restores it as a normal
+    // (unstarred) entry, the star one restores it starred. The
+    // starred state the entry had when it was thrown away is
+    // deliberately NOT carried over — it would make the star
+    // button a no-op for exactly the entries where you would
+    // reach for it.
     void restoreEntry(const QString &uuid, bool star)
     {
         QVector<TrashRow> trash = loadTrash();
@@ -2173,7 +2226,7 @@ private:
             q.addBindValue(row.last);
             q.addBindValue(row.e.mimetypes);
             q.addBindValue(row.e.text);
-            q.addBindValue(star || row.e.starred ? 1 : 0);
+            q.addBindValue(star ? 1 : 0);
             q.exec();
             db.close();
         }
@@ -2543,8 +2596,19 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
     deck->selectTabForTest(0);
     check(deck->currentStackForTest() == 0, "selecting All switches back");
 
-    printf("\n== write path (sandboxed) ==\n");
-    // Already sandboxed for the whole suite; nothing below may touch the real DB.
+    // The sandbox is seeded from the live database, and the live database can
+    // legitimately hold nothing but starred entries — after the user used Clear,
+    // for instance. Checks below need an unstarred row, so make one rather than
+    // skipping them: a skipped check is a missing check.
+    auto ensureUnstarredExists = [&] {
+        if (deck->unstarredCount() == 0 && deck->testList()->count() > 1) {
+            deck->setStar(deck->uuidAtRow(1), false);
+            deck->reload();
+        }
+        return deck->unstarredCount() > 0;
+    };
+
+    printf("\n== write path (sandboxed) ==\n");    // Already sandboxed for the whole suite; nothing below may touch the real DB.
     {
         const QVector<Entry> sandboxed = readHistory();
         check(sandboxed.size() == base.size(), "sandbox reads the same entry count");
@@ -2678,10 +2742,12 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
 
             // Clear-all-unstarred must spare starred entries.
             deck->reload();
+            // The trash is emptied first so the count below is unambiguous: the
+            // ✕ button check above left one entry in it.
+            deck->clearTrashForTest();
             // Ensure something unstarred exists so the clear has work to do.
-            if (deck->unstarredCount() == 0 && deck->testList()->count() > 1) {
-                deck->setStar(deck->uuidAtRow(1), false);
-                deck->reload();
+            if (!ensureUnstarredExists()) {
+                check(false, "there are unstarred entries to clear");
             }
             const int starredBefore = [&] {
                 int n = 0;
@@ -2706,6 +2772,23 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
             check(unstarredAfter == 0, "no unstarred entries survive a clear");
             check(starredAfter == starredBefore, "clear keeps every starred entry");
             check(deck->clearUnstarred() == 0, "clearing an already-clear list is a no-op");
+
+            // Clear used to be the last path that destroyed rows outright: it
+            // cleared *everything* unprotected and none of it could be brought
+            // back. The cleared rows now go to the trash.
+            check(int(loadTrash().size()) == unstarredBefore,
+                  "cleared entries land in the trash rather than the void");
+            const QVector<TrashRow> cleared = loadTrash();
+            if (!cleared.isEmpty()) {
+                const QString uuidToRestore = cleared.first().e.uuid;
+                deck->restoreByUuidForTest(uuidToRestore, false);
+                bool oneRestorable = false;
+                for (const Entry &e : readHistory()) {
+                    oneRestorable = oneRestorable || e.uuid == uuidToRestore;
+                }
+                check(oneRestorable, "an entry removed by Clear can be restored from the trash");
+            }
+            deck->clearTrashForTest();
     }
 
     // The one check that must see past the sandbox. Asserted against the real
@@ -2724,19 +2807,11 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
         seedSandbox();
         deck->reload();
         deck->showForTest();
+        check(ensureUnstarredExists(), "the seeded sandbox has an unstarred row to trash");
 
         const int row = deck->firstNonStarredRow();
         const QString uuid = deck->uuidAtRow(row);
         check(row >= 0 && !uuid.isEmpty(), "found a row to move into the trash");
-
-        const bool wasStarred = [&] {
-            for (const Entry &e : readHistory()) {
-                if (e.uuid == uuid) {
-                    return e.starred;
-                }
-            }
-            return false;
-        }();
 
         // Removing through the UI path must KEEP the row, not lose it.
         deck->trashByUuidForTest(uuid);
@@ -2788,9 +2863,63 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
             }
         }
         check(back, "clicking ↩ restores the entry into the history");
-        check(backStarred == wasStarred, "restore keeps the original starred state");
+        check(!backStarred, "clicking ↩ restores an ordinary, unstarred entry");
         check(loadTrash().isEmpty(), "clicking ↩ takes the entry out of the trash");
         check(!deck->tabVisibleForTest(3), "the Trash tab disappears when the trash is empty");
+
+        // A trashed STARRED entry — the case that came out of the trash looking
+        // exactly as it did in the history, filled star and all. Both trash
+        // buttons must now mean something different: ↩ restores it as a normal
+        // entry, the star restores it starred.
+        deck->reload();
+        deck->showForTest();
+        const QString starredUuid = deck->firstStarredUuidForTest();
+        check(!starredUuid.isEmpty(), "found a starred entry to trash");
+        deck->trashByUuidForTest(starredUuid);
+        bool starredInTrash = false;
+        for (const TrashRow &t : loadTrash()) {
+            starredInTrash = starredInTrash || (t.e.uuid == starredUuid && t.e.starred);
+        }
+        check(starredInTrash, "a starred entry is captured in the trash");
+        deck->selectTabForTest(3);
+        QListWidget *tl3 = deck->trashListForTest();
+        if (tl3->count() > 0) {
+            const QRect sr = tl3->visualItemRect(tl3->item(0));
+            Deck::clickAt(tl3->viewport(), removeButtonRect(sr).center()); // ↩
+        }
+        deck->selectTabForTest(0);
+        bool starredBack = false;
+        bool stillStarred = false;
+        for (const Entry &e : readHistory()) {
+            if (e.uuid == starredUuid) {
+                starredBack = true;
+                stillStarred = e.starred;
+            }
+        }
+        check(starredBack, "↩ brings a trashed starred entry back");
+        check(!stillStarred, "↩ restores it unstarred, not as it was thrown away");
+
+        // Same entry, but restored through the star button.
+        deck->reload();
+        deck->showForTest();
+        deck->trashByUuidForTest(starredUuid);
+        deck->selectTabForTest(3);
+        QListWidget *tl4 = deck->trashListForTest();
+        if (tl4->count() > 0) {
+            const QRect sr2 = tl4->visualItemRect(tl4->item(0));
+            Deck::clickAt(tl4->viewport(), starButtonRect(sr2).center());
+        }
+        deck->selectTabForTest(0);
+        bool starredBack2 = false;
+        bool starredFlag = false;
+        for (const Entry &e : readHistory()) {
+            if (e.uuid == starredUuid) {
+                starredBack2 = true;
+                starredFlag = e.starred;
+            }
+        }
+        check(starredBack2 && starredFlag, "the star button restores a trashed entry as starred");
+        deck->clearTrashForTest();
 
         // The star button in the trash restores AND stars (user request).
         deck->reload();

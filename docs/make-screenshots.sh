@@ -86,10 +86,12 @@ con.close()
 
 # A small trash sidecar too, so the Trash tab has something to show.
 # Same shape saveTrash() writes: a JSON array of row objects. The uuids
-# are deliberately not in main — a trashed row is not a history row.
+# are deliberately not in main — a trashed row is not a history row. One of
+# them is starred, to show that a trashed starred entry is drawn like any
+# other row in the trash.
 trash = [
     {"uuid": letter * 40, "text": text, "mimetypes": "text/plain",
-     "added": now - ago, "last": now - ago, "starred": 0}
+     "added": now - ago, "last": now - ago, "starred": starred}
     for letter, (text, ago, starred) in zip("abc", rows[5:8])
 ]
 (root / "trash.json").write_text(json.dumps(trash))
