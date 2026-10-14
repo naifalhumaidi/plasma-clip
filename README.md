@@ -67,10 +67,10 @@ ydotool key 29:1 29:0                        # expect: silent, exit 0
 | Switch tab | **All** / **Starred** / **Not starred** / **Trash** |
 | Star an item | hover the row → **★** (left button) |
 | Delete an item | hover the row → **✕** (right button), or right-click → Move to trash |
-| Restore from trash | on the **Trash** tab → **↩**, or right-click → Restore |
+| Restore from trash | on the **Trash** tab → **↩** (plain), **★** (restores it starred) |
 | Copy without pasting | right-click → Copy only |
 | Add an entry | **＋ New**, type, `Enter` |
-| Clear unstarred entries | **Clear**, then confirm in the popup |
+| Clear unstarred entries | **Clear**, then confirm — they go to the **Trash** tab, not away for good |
 | Empty the trash | **Trash** tab → **Clear Trash**, then confirm |
 | Sort | dropdown: Newest / Oldest / A–Z / Z–A |
 | Close without pasting | `Esc` |
@@ -86,9 +86,11 @@ Notes:
   something to show, so they never clutter the UI. Starred entries are *not*
   pinned to the top of the All tab — they sort normally and live in their own
   tab.
-- **✕ never loses anything.** Deleting moves the entry to the **Trash** tab, and
-  on that tab the same button becomes **↩ restore** (the star button there
-  restores *and* stars). Clicking a trash row never pastes it.
+- **Nothing is deleted outright.** ✕ moves the entry to the **Trash** tab, and
+  **Clear** moves every unstarred entry there too. On the Trash tab the buttons
+  mean exactly two things: **↩** brings the entry back as an ordinary one and
+  **★** brings it back starred — so a trashed row never looks starred, whatever
+  it was before. Clicking a trash row never pastes it.
 - **Clear** on a history tab removes every unstarred entry and always keeps
   starred ones. **Clear Trash** is red and named differently precisely so the
   two can never be confused; it asks for confirmation with counts either way.

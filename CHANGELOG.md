@@ -39,6 +39,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   instead of closing silently.
 
 ### Changed
+- **Clear** now moves every unstarred entry to the **Trash** tab instead of
+  deleting it. It was the last path that destroyed rows outright, and it clears
+  *everything* unprotected, so a mis-click there was unrecoverable. Batched into
+  one transaction and one sidecar write, and image payloads survive for a
+  restore exactly as they do for a single ✕.
+- In the trash, **↩** restores an entry as an ordinary (unstarred) one and **★**
+  restores it starred. The starred state an entry had when it was thrown away is
+  not carried back, because that made the star button a no-op for precisely the
+  entries you would reach for it with. A trashed row no longer draws a filled
+  star either — in the trash the star is an action, not a state.
 - Popup restyled after the Windows 11 clipboard panel, themed with Plasma
   colours: 400px wide, rounded panel, 28px action buttons.
 - The status line floats over the list instead of sitting below it, so showing a
