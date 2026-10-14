@@ -105,6 +105,7 @@ export QT_QPA_PLATFORM=offscreen
 echo "==> rendering docs screenshots from synthetic data"
 "$BIN" --preview "$OUT" >/dev/null
 "$BIN" --screenshot "$OUT/preview-hover.png"   --state hover   >/dev/null
+"$BIN" --screenshot "$OUT/preview-edit.png"    --state edit    >/dev/null
 "$BIN" --screenshot "$OUT/preview-confirm.png" --state confirm >/dev/null
 
 # --preview writes all/starred/notstarred/search/alpha/trash/new.png;

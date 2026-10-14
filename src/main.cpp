@@ -33,6 +33,8 @@
 #include <QLabel>
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QTextCursor>
 #include <QListWidget>
 #include <QMenu>
 #include <QMouseEvent>
@@ -74,15 +76,24 @@ const int POPUP_WIDTH = 400;
 
 // Right-hand action buttons. Painting and hit-testing both call these, so they
 // can never disagree, and no width is hardcoded. Remove is outermost (harder to
-// hit by accident); star sits inboard of it.
+// hit by accident); edit sits inboard of it, star inboard of that.
 QRect removeButtonRect(const QRect &row)
 {
     return QRect(row.right() - 10 - BTN, row.center().y() - BTN / 2, BTN, BTN);
 }
 
-QRect starButtonRect(const QRect &row)
+// Opens the full text for reading and editing. A button replaced the row
+// tooltip: a native Qt tooltip is a separate OS window, and that one could
+// come up as a black box — the one part of this panel the test suite cannot
+// touch at all.
+QRect editButtonRect(const QRect &row)
 {
     return QRect(removeButtonRect(row).left() - 4 - BTN, row.center().y() - BTN / 2, BTN, BTN);
+}
+
+QRect starButtonRect(const QRect &row)
+{
+    return QRect(editButtonRect(row).left() - 4 - BTN, row.center().y() - BTN / 2, BTN, BTN);
 }
 
 // Opt-in click tracing, so a mis-click can be diagnosed from evidence rather
@@ -744,13 +755,23 @@ public:
             chip.setAlpha(selected ? 60 : 90);
             p->setPen(Qt::NoPen);
             p->setBrush(chip);
-            for (const QRect &r : {starButtonRect(row), removeButtonRect(row)}) {
+            // No ✎ chip in the trash: a trashed row is not part of the history,
+            // so there is nothing to correct there yet. The slot stays empty,
+            // which keeps the button geometry identical in every view.
+            QVector<QRect> chips{editButtonRect(row), starButtonRect(row), removeButtonRect(row)};
+            if (trashView) {
+                chips.removeFirst();
+            }
+            for (const QRect &r : chips) {
                 p->drawRoundedRect(r.adjusted(0, 0, -1, -1), 6, 6);
             }
             QFont bf = f;
             bf.setPointSizeF(f.pointSizeF() + 1);
             p->setFont(bf);
             p->setPen(fg);
+            if (!trashView) {
+                p->drawText(editButtonRect(row), Qt::AlignCenter, QStringLiteral("✎"));
+            }
             // In the trash the star is an action ("restore it starred"), not a
             // state marker, so it is drawn empty even for an entry that was
             // starred when it was thrown away.
@@ -945,6 +966,7 @@ public:
         connect(m_newBtn, &QPushButton::clicked, this, &Deck::toggleNewEntry);
         connect(m_clearBtn, &QPushButton::clicked, this, &Deck::toggleClear);
         buildOverlay();
+        buildEditor();
         connect(m_sort, &QComboBox::activated, this, [this] {
             m_sortMode = SortMode(m_sort->currentData().toInt());
             applySort();
@@ -1016,6 +1038,8 @@ public:
         // touching child geometry before this used to crash.
         if (state == QLatin1String("hover")) {
             hoverAt(m_list->viewport(), rowRectFor(2).center());
+        } else if (state == QLatin1String("edit")) {
+            openEditorForRowForTest(0);
         } else if (state == QLatin1String("confirm")) {
             showConfirm(QStringLiteral("Clear clipboard history?"),
                         QStringLiteral("This permanently removes 27 unstarred entries.\n\n14 starred entries are kept."));
@@ -1090,6 +1114,20 @@ public:
         return m_search->text();
     }
 
+    QString rowToolTipForTest(int row) const
+    {
+        return row >= 0 && row < m_list->count() ? m_list->item(row)->toolTip() : QString();
+    }
+
+    QString rowTextForTest(int row) const
+    {
+        if (row < 0 || row >= m_list->count()) {
+            return QString();
+        }
+        const Entry *e = m_store.entryFor(m_list->item(row)->data(Qt::UserRole).toInt());
+        return e ? e->text : QString();
+    }
+
     void setSearchForTest(const QString &text)
     {
         m_search->setText(text);
@@ -1098,6 +1136,40 @@ public:
     void clearCurrentRowForTest()
     {
         currentList()->setCurrentRow(-1);
+    }
+
+    // The full-text editor, driven through the same event paths a user hits.
+    void openEditorForRowForTest(int row)
+    {
+        if (row >= 0 && row < m_list->count()) {
+            openEditor(uuidAtRow(row));
+        }
+    }
+
+    bool editorVisibleForTest() const
+    {
+        return m_editOverlay && m_editOverlay->isVisible();
+    }
+
+    QString editorTextForTest() const
+    {
+        return m_editText ? m_editText->toPlainText() : QString();
+    }
+
+    void setEditorTextForTest(const QString &text)
+    {
+        m_editText->setPlainText(text);
+    }
+
+    void pressEditorKeyForTest(int key, Qt::KeyboardModifiers mods = Qt::NoModifier)
+    {
+        QKeyEvent ev(QEvent::KeyPress, key, mods);
+        QApplication::sendEvent(m_editText, &ev);
+    }
+
+    void saveEditForTest()
+    {
+        saveEdit();
     }
 
     QRect rowRectFor(int row) const
@@ -1671,7 +1743,9 @@ private:
             for (int i : rows) {
                 auto *it = new QListWidgetItem(t.list);
                 it->setData(Qt::UserRole, i);
-                it->setToolTip(m_store.entries.at(i).text);
+                // No row tooltip: the full text is opened with the ✎ button
+                // instead. A native tooltip is its own OS window and could show
+                // up as a black box, and no check in the suite can see one.
             }
             if (t.list->count()) {
                 t.list->setCurrentRow(qBound(0, keep, t.list->count() - 1));
@@ -1692,7 +1766,6 @@ private:
                 }
                 auto *it = new QListWidgetItem(m_trashList);
                 it->setData(Qt::UserRole, i);
-                it->setToolTip(e.text);
             }
             if (m_trashList->count()) {
                 m_trashList->setCurrentRow(qBound(0, keep, m_trashList->count() - 1));
@@ -1817,6 +1890,114 @@ private:
         connect(cancel, &QPushButton::clicked, this, [this] { m_overlay->hide(); });
         connect(m_confirmOk, &QPushButton::clicked, this, &Deck::confirmClear);
         m_overlay->hide();
+    }
+
+    // Full-text editor for one entry, opened by the row's ✎ button. In-window
+    // for the same reason the clear confirmation is: a QDialog would open behind
+    // this always-on-top frameless panel. Multi-line on purpose — most of what
+    // people copy (logs, code, AI answers) has newlines, so a one-line field
+    // would be useless for exactly the entries worth editing.
+    void buildEditor()
+    {
+        m_editOverlay = new QWidget(root);
+        m_editOverlay->setObjectName(QStringLiteral("editOverlay"));
+        m_editOverlay->setStyleSheet(QStringLiteral(R"(
+            #editOverlay { background: rgba(0,0,0,110); border-radius: 12px; }
+            #editCard { background: palette(window); border: 1px solid palette(mid); border-radius: 10px; }
+            #editTitle { font-weight: 600; font-size: 11pt; }
+            #editText { border: 1px solid palette(mid); border-radius: 8px; padding: 6px;
+                        background: palette(base); selection-background-color: palette(highlight); }
+            QPushButton { padding: 6px 14px; }
+        )"));
+        auto *ov = new QVBoxLayout(m_editOverlay);
+        ov->setContentsMargins(18, 18, 18, 18);
+        ov->addStretch(1);
+
+        auto *card = new QWidget(m_editOverlay);
+        card->setObjectName(QStringLiteral("editCard"));
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(16, 14, 16, 14);
+        cl->setSpacing(10);
+
+        m_editTitle = new QLabel(card);
+        m_editTitle->setObjectName(QStringLiteral("editTitle"));
+        cl->addWidget(m_editTitle);
+
+        m_editText = new QPlainTextEdit(card);
+        m_editText->setObjectName(QStringLiteral("editText"));
+        m_editText->setFixedHeight(170);
+        m_editText->setTabChangesFocus(true);
+        // Enter has to keep inserting newlines, so Save is Ctrl+Enter as well as
+        // the button — handled in eventFilter().
+        m_editText->installEventFilter(this);
+        cl->addWidget(m_editText);
+
+        auto *btns = new QHBoxLayout;
+        btns->addStretch(1);
+        auto *cancel = new QPushButton(QStringLiteral("Cancel"), card);
+        m_editSave = new QPushButton(QStringLiteral("Save"), card);
+        btns->addWidget(cancel);
+        btns->addWidget(m_editSave);
+        cl->addLayout(btns);
+
+        ov->addWidget(card);
+        ov->addStretch(1);
+
+        connect(cancel, &QPushButton::clicked, this, [this] { m_editOverlay->hide(); });
+        connect(m_editSave, &QPushButton::clicked, this, &Deck::saveEdit);
+        m_editOverlay->hide();
+    }
+
+    void openEditor(const QString &uuid)
+    {
+        const Entry *target = nullptr;
+        for (const Entry &e : m_store.entries) {
+            if (e.uuid == uuid) {
+                target = &e;
+                break;
+            }
+        }
+        if (!target) {
+            return; // cleared between the click and here; nothing to edit
+        }
+        m_editUuid = uuid;
+        m_editTitle->setText(QStringLiteral("Edit entry — Ctrl+Enter saves, Esc cancels"));
+        m_editText->setPlainText(target->text);
+        // Cursor at the start, nothing selected: an accidental keystroke must
+        // insert, never wipe the whole entry.
+        m_editText->moveCursor(QTextCursor::Start);
+        m_editOverlay->setGeometry(root->rect());
+        m_editOverlay->raise();
+        m_editOverlay->show();
+        m_editText->setFocus();
+    }
+
+    // Writes the corrected text back into that one entry. The clipboard itself is
+    // untouched: this repairs history, it does not copy anything.
+    void saveEdit()
+    {
+        const QString text = m_editText->toPlainText();
+        const QString uuid = m_editUuid;
+        m_editOverlay->hide();
+        m_editUuid.clear();
+        if (uuid.isEmpty()) {
+            return;
+        }
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("ccedit"));
+        db.setDatabaseName(klipperDir() + QStringLiteral("/history3.sqlite"));
+        bool ok = false;
+        if (db.open()) {
+            QSqlQuery q(db);
+            q.exec(QStringLiteral("PRAGMA busy_timeout=2000"));
+            q.prepare(QStringLiteral("UPDATE main SET text=? WHERE uuid=?"));
+            q.addBindValue(text);
+            q.addBindValue(uuid);
+            ok = q.exec() && q.numRowsAffected() > 0;
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("ccedit"));
+        reload();
+        flash(ok ? QStringLiteral("Entry updated.") : QStringLiteral("Entry is gone; nothing to update."));
     }
 
     void showConfirm(const QString &title, const QString &body)
@@ -1982,6 +2163,19 @@ private:
             }
             return false;
         }
+        if (watched == m_editText && ev->type() == QEvent::KeyPress) {
+            auto *ke = static_cast<QKeyEvent *>(ev);
+            if (ke->key() == Qt::Key_Escape) {
+                m_editOverlay->hide();
+                return true;
+            }
+            if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
+                && (ke->modifiers() & Qt::ControlModifier)) {
+                saveEdit();
+                return true;
+            }
+            return false;
+        }
         if (ev->type() == QEvent::MouseMove && isListViewport(watched)) {
             auto *me = static_cast<QMouseEvent *>(ev);
             auto *view = qobject_cast<QAbstractItemView *>(qobject_cast<QWidget *>(watched)->parentWidget());
@@ -2009,6 +2203,14 @@ private:
                                      : m_store.entryFor(idx.data(Qt::UserRole).toInt());
                 if (e) {
                     const QPoint p = me->pos();
+                    if (!trashView && editButtonRect(row).contains(p)) {
+                        traceClick(QStringLiteral("EDIT row=%1 pos=%2,%3")
+                                       .arg(idx.row())
+                                       .arg(p.x())
+                                       .arg(p.y()));
+                        openEditor(e->uuid);
+                        return true;
+                    }
                     if (trashView && starButtonRect(row).contains(p)) {
                         traceClick(QStringLiteral("RESTORE-STAR row=%1 pos=%2,%3")
                                        .arg(idx.row())
@@ -2376,6 +2578,11 @@ private:
     QLabel *m_confirmBody = nullptr;
     QPushButton *m_confirmOk = nullptr;
     bool m_confirmingTrash = false; // which confirm is on screen
+    QWidget *m_editOverlay = nullptr;
+    QLabel *m_editTitle = nullptr;
+    QPlainTextEdit *m_editText = nullptr;
+    QPushButton *m_editSave = nullptr;
+    QString m_editUuid;
     QComboBox *m_sort = nullptr;
     RowDelegate *m_delegate = nullptr;
     Store m_store;
@@ -2678,16 +2885,49 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
                 Deck::clickAt(vp, starButtonRect(rect).center());
                 check(flagIs(rowUuid) != rowStarred, "clicking the STAR button toggles starred");
 
-                // Geometry contract: the star keeps its verified position and
-                // the two buttons never overlap.
-                check(!starButtonRect(rect).intersects(removeButtonRect(rect)),
-                      "star and remove buttons do not overlap");
+                // Geometry contract: the buttons keep their verified positions
+                // and never overlap. Three of them now, so the row text has to
+                // clear the leftmost.
+                check(!starButtonRect(rect).intersects(editButtonRect(rect)),
+                      "star and edit buttons do not overlap");
+                check(!editButtonRect(rect).intersects(removeButtonRect(rect)),
+                      "edit and remove buttons do not overlap");
                 check(removeButtonRect(rect).right() == rect.right() - 11,
                       "remove stays anchored 10px from the row edge");
-                check(starButtonRect(rect).right() < removeButtonRect(rect).left(),
-                      "star sits inboard (left) of remove");
+                check(starButtonRect(rect).right() < editButtonRect(rect).left(),
+                      "star sits leftmost, edit then remove");
+                check(editButtonRect(rect).right() < removeButtonRect(rect).left(),
+                      "edit sits inboard of remove");
                 check(starButtonRect(rect).width() == removeButtonRect(rect).width(),
-                      "both buttons are the same size");
+                      "all three buttons are the same size");
+                // The full text used to arrive in a native tooltip, which is its
+                // own OS window and could show up as a black box.
+                check(deck->rowToolTipForTest(row).isEmpty(),
+                      "rows carry no tooltip any more (the black-window bug)");
+
+                // ✎ opens the full text for editing, and a REAL click is the only
+                // way to prove the hit-test matches where the delegate paints.
+                const QString editUuid = deck->uuidAtRow(row);
+                Deck::clickAt(vp, editButtonRect(rect).center());
+                check(deck->editorVisibleForTest(), "clicking ✎ opens the full-text editor");
+                check(deck->editorTextForTest() == deck->rowTextForTest(row),
+                      "the editor shows the entry's text verbatim, newlines and all");
+                deck->pressEditorKeyForTest(Qt::Key_Escape);
+                check(!deck->editorVisibleForTest(), "Esc closes the editor");
+
+                // Editing and saving rewrites that entry's text.
+                Deck::clickAt(vp, editButtonRect(rect).center());
+                deck->setEditorTextForTest(QStringLiteral("edited by the test"));
+                deck->saveEditForTest();
+                check(!deck->editorVisibleForTest(), "Save closes the editor");
+                bool rewritten = false;
+                for (const Entry &e : readHistory()) {
+                    if (e.uuid == editUuid) {
+                        rewritten = e.text == QStringLiteral("edited by the test");
+                    }
+                }
+                check(rewritten, "Save writes the edited text back into that entry");
+                deck->showForTest();
 
                 Deck::clickAt(vp, removeButtonRect(rect).center());
                 bool gone = true;
@@ -3197,7 +3437,8 @@ int main(int argc, char **argv)
         for (const QString &state : {QStringLiteral("all"), QStringLiteral("starred"),
                                      QStringLiteral("notstarred"), QStringLiteral("search"),
                                      QStringLiteral("alpha"), QStringLiteral("trash"),
-                                     QStringLiteral("new")}) {
+                                     QStringLiteral("new"), QStringLiteral("edit"),
+                                     QStringLiteral("hover"), QStringLiteral("confirm")}) {
             deck->renderState(dir + QStringLiteral("/") + state + QStringLiteral(".png"), state);
             printf("wrote %s/%s.png\n", qPrintable(dir), qPrintable(state));
         }
