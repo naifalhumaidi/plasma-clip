@@ -1619,20 +1619,28 @@ struct DoubleClickResult {
             return;
         }
         reload();
-        m_search->clear();
-        m_newEntry->setVisible(false);
-        // Always reopen on "All" so the popup is predictable.
-        m_tabBar->setCurrentIndex(0);
-        m_stack->setCurrentIndex(0);
-        if (m_store.entries.isEmpty()) {
+        // The panel reopens where the user left it: same tab, same search, and
+        // an open editor keeps its draft. Resetting to All with a cleared
+        // search on every open threw away that context, including an edit in
+        // progress. (rebuild() still falls back to All if the active tab has
+        // become empty while hidden.)
+        const bool editing = m_editOverlay && m_editOverlay->isVisible();
+        if (m_store.entries.isEmpty() && !editing) {
             flash(QStringLiteral("Clipboard history is empty"));
             return;
         }
+        // Withdraw and remap so any compositor-side minimized state is dropped:
+        // show() alone brings a minimized window back minimized.
+        hide();
         layoutAtCursor();
-        show();
+        showNormal();
         raise();
         activateWindow();
-        m_search->setFocus();
+        if (editing) {
+            m_editText->setFocus();
+        } else {
+            m_search->setFocus();
+        }
         // Dismissal arms on the WindowActivate event (see event()),
         // so there is deliberately no timer here: until the compositor
         // has actually granted focus, a deactivation is not an outside
@@ -1648,12 +1656,10 @@ struct DoubleClickResult {
         if (!visible) {
             // Our own hide must never be mistaken for an outside click.
             m_deactivateArmed = false;
-            // Any open card goes with the panel. Leaving the editor up meant
-            // reopening the panel showed the editor again, over an entry the
-            // user had already dismissed by closing the panel.
-            if (m_editOverlay) {
-                closeEditor();
-            }
+            // Nothing else is reset here on purpose: the panel reopens in the
+            // same state it closed in — same tab, same search, and an open
+            // editor with its draft intact. A hidden child comes back with its
+            // parent, so the editor needs no manual restore.
         }
         QWidget::setVisible(visible);
     }
@@ -1691,13 +1697,11 @@ protected:
             traceClick(QStringLiteral("deactivated during confirm -> keep"));
             return;
         }
-        // Same for the editor card: the text area takes focus when it opens, and
-        // that focus change arrives as a deactivation. Hiding here closed the
-        // editor the user had just opened.
-        if (m_editOverlay && m_editOverlay->isVisible()) {
-            traceClick(QStringLiteral("deactivated during editor -> keep"));
-            return;
-        }
+        // No guard for the editor card: a WindowDeactivate means the user
+        // clicked outside the panel, and that exits normally even mid-edit.
+        // (Focus moving between our own widgets never deactivates the window,
+        // so this cannot fire from opening the editor itself.) The draft
+        // survives because hiding no longer resets anything.
         traceClick(QStringLiteral("deactivated outside -> hide"));
         hide();
     }
@@ -1707,6 +1711,9 @@ protected:
         QWidget::resizeEvent(ev);
         if (m_overlay && m_overlay->isVisible()) {
             m_overlay->setGeometry(root->rect());
+        }
+        if (m_editOverlay && m_editOverlay->isVisible()) {
+            m_editOverlay->setGeometry(root->rect());
         }
         positionStatus();
     }
@@ -3045,14 +3052,31 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
                 check(deck->editorTextForTest() == QStringLiteral("unsaved draft"),
                       "Meta+V mid-edit keeps the draft");
 
-                // Closing the panel must take the editor with it, or reopening
-                // the panel shows an editor the user already dismissed.
-                Deck::clickAt(vp, editButtonRect(rect).center());
+                // An outside-click exit keeps everything: Meta+V reopens the
+                // panel in the same state — same tab, same search, editor open
+                // with its draft.
+                if (!deck->tabVisibleForTest(1) && deck->testList()->count() > 0) {
+                    deck->setStar(deck->uuidAtRow(0), true);
+                    deck->reload();
+                }
+                deck->selectTabForTest(deck->tabVisibleForTest(1) ? 1 : 0);
+                const int keptTab = deck->currentTabForTest();
+                deck->setSearchForTest(QStringLiteral("e"));
+                const QRect r3 = deck->rowRectFor(row);
+                Deck::clickAt(vp, editButtonRect(r3).center());
                 check(deck->editorVisibleForTest(), "the editor is open before the panel closes");
-                deck->hide();
-                deck->showForTest();
-                check(!deck->editorVisibleForTest(),
-                      "reopening the panel does not bring the editor back");
+                deck->setEditorTextForTest(QStringLiteral("unsaved draft"));
+                deck->hide(); // outside-click exit
+                deck->toggle(); // Meta+V
+                check(deck->isVisible(),
+                      "Meta+V reopens after an outside-click exit with the editor open");
+                check(deck->editorVisibleForTest(), "the editor comes back with the panel");
+                check(deck->editorTextForTest() == QStringLiteral("unsaved draft"),
+                      "the draft survived the exit");
+                check(deck->searchTextForTest() == QStringLiteral("e"),
+                      "the search survived the exit");
+                check(deck->currentTabForTest() == keptTab,
+                      "the tab survived the exit");
 
                 // Editing and saving rewrites that entry's text.
                 Deck::clickAt(vp, editButtonRect(rect).center());

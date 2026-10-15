@@ -98,7 +98,8 @@ Notes:
 - Text and images are both handled. Copied **image files** (a `file://` path to a
   PNG/JPG/etc.) are detected and shown with a real thumbnail and filename.
 - Timestamps are relative: "just now", "19 min ago", "1 h ago".
-- The popup always reopens on the **All** tab with the search box cleared.
+- The popup reopens where you left it: same tab, same search, and an open
+  editor with its draft intact. Closing it mid-edit loses nothing.
 
 ### Read or edit an entry
 

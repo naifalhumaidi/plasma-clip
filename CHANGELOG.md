@@ -69,6 +69,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   progress: Esc does nothing while editing, Meta+V keeps panel and editor in
   place. Only Cancel or Save exits the editor. (The window-level Esc shortcut
   used to fire as well and hide everything.)
+- The panel reopens in the same state it closed in — same tab, same search,
+  editor open with its draft — instead of resetting to All with a cleared
+  search. An outside click exits normally even mid-edit; Meta+V brings it all
+  back. The show path still withdraws and remaps first, since show() alone
+  brings a minimized window back minimized.
 - Hovering a row no longer shows the full text in a tooltip. That tooltip is a
   separate OS window, and it intermittently came up as a **black box** over the
   panel. It was also the one thing in the panel no test could reach, so the
