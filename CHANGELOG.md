@@ -69,11 +69,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   progress: Esc does nothing while editing, Meta+V keeps panel and editor in
   place. Only Cancel or Save exits the editor. (The window-level Esc shortcut
   used to fire as well and hide everything.)
-- Meta+V could never restore a minimized panel. Minimized still counts as
-  "visible" to Qt and the intent flag, so toggle() took the hide branch — and
-  show() does not clear WindowMinimized, so not even the next press brought it
-  back. Meta+V now unminimizes and views the panel; hiding still works as
-  before on a restored one.
 - Hovering a row no longer shows the full text in a tooltip. That tooltip is a
   separate OS window, and it intermittently came up as a **black box** over the
   panel. It was also the one thing in the panel no test could reach, so the

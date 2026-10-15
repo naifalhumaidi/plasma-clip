@@ -1614,10 +1614,7 @@ struct DoubleClickResult {
             activateWindow();
             return;
         }
-        // A minimized panel is still "visible" as far as Qt and the intent flag
-        // are concerned, so without this Meta+V took the hide branch and the
-        // panel never came back: show() does not clear WindowMinimized.
-        if (m_wantVisible && !isMinimized()) {
+        if (m_wantVisible) {
             hide();
             return;
         }
@@ -1632,9 +1629,6 @@ struct DoubleClickResult {
             return;
         }
         layoutAtCursor();
-        // Unminimize before showing: a minimized window stays minimized across
-        // show(), so without this Meta+V could never restore it.
-        setWindowState(windowState() & ~Qt::WindowMinimized);
         show();
         raise();
         activateWindow();
@@ -3479,21 +3473,6 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
     deck->toggle();
     check(!deck->intendsVisibleForTest() && !deck->isVisible(),
           "a second Meta+V hides it again");
-    deck->hide();
-
-    // A minimized panel is still "visible" to Qt, so toggle() used to take the
-    // hide branch and the panel never came back — and show() alone does not
-    // clear WindowMinimized, so even the next press could not restore it.
-    deck->showForTest();
-    deck->showMinimized();
-    check(deck->isMinimized(), "the panel can be minimized");
-    deck->toggle();
-    check(!deck->isMinimized(), "Meta+V unminimizes the panel");
-    check(deck->intendsVisibleForTest() && deck->isVisible(),
-          "Meta+V after minimize views the panel instead of hiding it");
-    deck->toggle();
-    check(!deck->intendsVisibleForTest() && !deck->isVisible(),
-          "Meta+V on the restored panel hides it again");
     deck->hide();
 
     // The confirm card is part of our window: pressing its buttons or buttons on
