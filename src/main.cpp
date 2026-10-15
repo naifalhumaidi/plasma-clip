@@ -1614,7 +1614,13 @@ struct DoubleClickResult {
             activateWindow();
             return;
         }
-        if (m_wantVisible) {
+        // Close only when the user is actually looking at the panel. A panel
+        // that is open but not active — minimized, covered, or just opened and
+        // not yet granted focus — must jump on the screen instead of hiding:
+        // deciding on wantVisible alone hid an already-unviewable panel, and
+        // on Wayland the client may not even know it is minimized, so no
+        // minimized-state check can save that decision.
+        if (m_wantVisible && isActiveWindow()) {
             hide();
             return;
         }
@@ -1628,8 +1634,12 @@ struct DoubleClickResult {
             flash(QStringLiteral("Clipboard history is empty"));
             return;
         }
+        // Force-restore: withdraw first so any compositor-side minimized state
+        // is dropped, then map fresh. show() alone cannot do this — a hidden
+        // remap of a minimized window comes back minimized.
+        hide();
         layoutAtCursor();
-        show();
+        showNormal();
         raise();
         activateWindow();
         m_search->setFocus();
@@ -3470,9 +3480,29 @@ const QString tmpDir = QDir(QDir::tempPath()).absoluteFilePath(QStringLiteral("c
     deck->toggle();
     check(deck->intendsVisibleForTest() && deck->isVisible(),
           "Meta+V reopens the panel immediately after an outside-click exit");
+    // Closing needs a panel the user is actually looking at: toggle() hides
+    // only the active window, so make it active the way the compositor would.
+    // Offscreen never grants activation (activateWindow() is a no-op there),
+    // so the test sets it directly; the pragma keeps that local.
+    QT_WARNING_PUSH
+    QT_WARNING_DISABLE_DEPRECATED
+    QApplication::setActiveWindow(deck);
+    QT_WARNING_POP
+    QApplication::processEvents();
     deck->toggle();
     check(!deck->intendsVisibleForTest() && !deck->isVisible(),
           "a second Meta+V hides it again");
+    deck->hide();
+
+    // Minimized and Meta+V: the panel is open but not viewable, so the press
+    // must bring it to the screen, not run the hide branch. (isMinimized()
+    // also deactivates the window, which is exactly the reported state.)
+    deck->showForTest();
+    deck->showMinimized();
+    check(!deck->isActiveWindow(), "a minimized panel is not the active window");
+    deck->toggle();
+    check(deck->intendsVisibleForTest() && deck->isVisible(),
+          "Meta+V on a minimized panel views it instead of hiding it");
     deck->hide();
 
     // The confirm card is part of our window: pressing its buttons or buttons on

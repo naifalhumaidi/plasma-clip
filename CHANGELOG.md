@@ -69,6 +69,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   progress: Esc does nothing while editing, Meta+V keeps panel and editor in
   place. Only Cancel or Save exits the editor. (The window-level Esc shortcut
   used to fire as well and hide everything.)
+- Meta+V on an open-but-unviewable panel hid it instead of showing it. A
+  minimized (or covered) panel still counts as visible, so toggle() took the
+  hide branch — and on Wayland the client may not even know it is minimized.
+  Meta+V now hides only the active window and otherwise jumps the panel onto
+  the screen; the show path withdraws and remaps first, since show() alone
+  brings a minimized window back minimized.
 - Hovering a row no longer shows the full text in a tooltip. That tooltip is a
   separate OS window, and it intermittently came up as a **black box** over the
   panel. It was also the one thing in the panel no test could reach, so the
