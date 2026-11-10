@@ -1,10 +1,44 @@
 # Custom Clipboard
 
-A focused clipboard-history panel for KDE Plasma. Press **Meta+V** to search
-recent clips, star useful items, edit long text, and restore anything moved to
-Trash. Selecting an item can paste it into the previously focused window.
+**A fast clipboard-history panel for KDE Plasma.** Press **Meta+V**, type to
+search your recent copies, and press **Enter** to paste — all without opening a
+browser tab or digging through Klipper's popup.
 
 ![Custom Clipboard showing the history panel](docs/preview.png)
+
+## Who this is for
+
+This app is for **KDE Plasma users who copy things constantly** — developers,
+writers, researchers, anyone juggling text and images all day. It replaces the
+stock Klipper popup with a panel built for speed:
+
+- **Search first.** Filter hundreds of clips by typing; Klipper's default
+  history is a flat list.
+- **Star what matters.** Keep frequently used snippets in their own tab.
+- **Edit before you paste.** Fix a URL or command inline instead of recopying.
+- **Delete without fear.** ✕ moves entries to a local Trash you can restore
+  from, instead of destroying them.
+- **Click-to-paste on Wayland.** Select an item and it types itself into the
+  window you were just using.
+
+If you use GNOME, macOS, or Windows, this won't run — it is built specifically
+on Klipper's database and KDE's global shortcuts. If you live in Plasma and
+wish your clipboard worked like this, it is for you.
+
+## Quick start
+
+Clone this repository, then:
+
+```bash
+cd plasma-clip
+./install.sh
+# log out and back in, then press Meta+V
+```
+
+Requirements: KDE Plasma with Klipper, Qt 6, KF6 GlobalAccel, Python 3.10+.
+Arch/CachyOS and Debian/Ubuntu package examples are below. See
+[DEVELOPMENT.md](DEVELOPMENT.md) if the installer needs adapting to your
+distribution.
 
 ## What it does
 
