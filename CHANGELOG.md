@@ -5,6 +5,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2.1.0] — Unreleased
 
+### Installation fixes
+- Persist the autostart restart policy (`Restart=always`, three-second delay).
+- Disable the legacy `clipdeck` shortcut and preserve the first shortcut backup.
+- Stop the autostart service before uninstalling and remove its restart override.
+- Recommend re-login rather than restarting the desktop shell.
+
 ### Added
 - Click-to-paste: selecting an entry pastes it into the previously focused input.
 - Close by clicking outside the panel, without stealing the click.

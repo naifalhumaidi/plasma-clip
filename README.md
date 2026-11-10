@@ -18,7 +18,9 @@ cd <this folder>
 ```
 
 No root needed. It builds, installs to `~/.local/bin`, registers autostart,
-enables the `ydotool` helper and releases Klipper's Meta+V.
+enables the `ydotool` helper and releases Klipper's Meta+V (including the
+legacy `clipdeck` binding). A systemd autostart override restarts the app after
+an unexpected exit, with a three-second delay.
 
 **Log out and back in afterwards** so the shell picks up the key change.
 

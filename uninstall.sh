@@ -3,12 +3,16 @@
 set -euo pipefail
 
 echo "==> stopping app"
+systemctl --user stop 'app-custom\x2dclipboard@autostart.service' 2>/dev/null || true
 pkill -f "$HOME/.local/bin/custom-clipboard" 2>/dev/null || true
 
 echo "==> removing files"
 rm -f "$HOME/.local/bin/custom-clipboard"
 rm -f "$HOME/.config/autostart/custom-clipboard.desktop"
 rm -f "$HOME/.config/custom-clipboard.ini"
+
+rm -f "$HOME/.config/systemd/user/app-custom\\x2dclipboard@autostart.service.d/override.conf"
+systemctl --user daemon-reload
 
 echo "==> restoring Klipper's Meta+V"
 python3 - "$HOME/.config/kglobalshortcutsrc" <<'PY' 2>/dev/null || echo "    (could not edit kglobalshortcutsrc)"

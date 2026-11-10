@@ -35,6 +35,13 @@ X-KDE-autostart-phase=2
 X-KDE-StartupNotify=false
 EOF
 
+# Plasma generates this user unit from the autostart desktop entry.
+echo "==> installing automatic restart policy"
+DROPIN="$HOME/.config/systemd/user/app-custom\\x2dclipboard@autostart.service.d"
+mkdir -p "$DROPIN"
+printf '[Service]\nRestart=always\nRestartSec=3\n' > "$DROPIN/override.conf"
+systemctl --user daemon-reload
+
 echo "==> ydotool (required for click-to-paste)"
 if ! command -v ydotool >/dev/null 2>&1; then
     echo "    ydotool is NOT installed. Install it with:"
@@ -69,9 +76,15 @@ path = sys.argv[1]
 if not os.path.exists(path):
     print("    no kglobalshortcutsrc yet (first login?) — nothing to do")
     raise SystemExit(0)
-shutil.copy2(path, path + ".bak-custom-clipboard")
+if not os.path.exists(path + ".bak-custom-clipboard"):
+    shutil.copy2(path, path + ".bak-custom-clipboard")
 text = open(path).read()
 new = re.sub(r'(?m)^show-on-mouse-pos=[^,]+,[^,]+,', 'show-on-mouse-pos=none,none,', text)
+# Older builds registered as clipdeck; disable only that legacy action.
+new = re.sub(r'(?m)(^\[clipdeck\]\n)(.*?)(?=^\[|\Z)',
+             lambda m: m[1] + re.sub(r'(?m)^show-clipboard=[^,]*,',
+                                    'show-clipboard=none,', m[2]),
+             new, flags=re.S)
 if new != text:
     open(path, "w").write(new)
     print("    Klipper Meta+V released (backup: kglobalshortcutsrc.bak-custom-clipboard)")
@@ -87,7 +100,5 @@ echo "  shortcut  : Meta+V   (Win+V)"
 echo
 if pgrep -x plasmashell >/dev/null 2>&1; then
     echo "NOTE: Klipper still holds Meta+V until the shell reloads it."
-    echo "      Log out and back in, or run:"
-    echo "        systemctl --user restart plasma-plasmashell.service"
-    echo "      (that briefly removes the panel, so do it when convenient)"
+    echo "      Log out and back in to apply the shortcut and autostart changes."
 fi
