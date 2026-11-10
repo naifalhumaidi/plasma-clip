@@ -5,6 +5,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2.1.0] — Unreleased
 
+### Setup and documentation
+- Limit shortcut edits to Klipper and the legacy `clipdeck` group, save the
+  original values once, and restore those values during uninstall without
+  replacing unrelated shortcut settings.
+- Remove the actual Qt settings file on uninstall and document its XDG config
+  path.
+- Document the supported KDE setup, ydotool requirements, and safe isolated
+  verification workflow for coding agents.
+
 ### Installation fixes
 - Persist the autostart restart policy (`Restart=always`, three-second delay).
 - Disable the legacy `clipdeck` shortcut and preserve the first shortcut backup.
@@ -140,5 +149,3 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   both are now in-window.
 - A null `root` member (shadowed by a constructor local) crashed the confirm
   dialog.
-
-[2.1.0]: https://github.com/OWNER/custom-clipboard/releases

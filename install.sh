@@ -6,12 +6,14 @@
 #   - enables the ydotool helper service (needed for click-to-paste)
 #   - moves Klipper's own Meta+V binding aside, since we take that key
 #
-# No root required. Nothing outside ~ is touched.
+# No root required. Installs under the current user's home; build output stays
+# alongside the repository sources.
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HOME/.local/bin/custom-clipboard"
-AUTOSTART="$HOME/.config/autostart/custom-clipboard.desktop"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+AUTOSTART="$CONFIG_HOME/autostart/custom-clipboard.desktop"
 
 echo "==> building"
 "$SRC_DIR/build.sh"
@@ -21,13 +23,13 @@ mkdir -p "$HOME/.local/bin"
 install -m 0755 "$SRC_DIR/custom-clipboard" "$BIN"
 
 echo "==> installing autostart entry"
-mkdir -p "$HOME/.config/autostart"
+mkdir -p "$CONFIG_HOME/autostart"
 cat > "$AUTOSTART" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Custom Clipboard
 Comment=Clipboard history popup that pastes on click
-Exec=$BIN
+Exec="$BIN"
 Icon=edit-paste
 Terminal=false
 Categories=Utility;
@@ -37,7 +39,8 @@ EOF
 
 # Plasma generates this user unit from the autostart desktop entry.
 echo "==> installing automatic restart policy"
-DROPIN="$HOME/.config/systemd/user/app-custom\\x2dclipboard@autostart.service.d"
+AUTOSTART_UNIT='app-custom\x2dclipboard@autostart.service'
+DROPIN="$CONFIG_HOME/systemd/user/${AUTOSTART_UNIT}.d"
 mkdir -p "$DROPIN"
 printf '[Service]\nRestart=always\nRestartSec=3\n' > "$DROPIN/override.conf"
 systemctl --user daemon-reload
@@ -70,27 +73,9 @@ echo "==> releasing Klipper's Meta+V binding"
 # re-registers that key from memory. D-Bus calls (setShortcut / unRegister)
 # report success but are immediately overwritten, so the only thing that works
 # is editing kglobalshortcutsrc directly. plasmashell picks it up on next login.
-python3 - "$HOME/.config/kglobalshortcutsrc" <<'PY'
-import os, re, shutil, sys
-path = sys.argv[1]
-if not os.path.exists(path):
-    print("    no kglobalshortcutsrc yet (first login?) — nothing to do")
-    raise SystemExit(0)
-if not os.path.exists(path + ".bak-custom-clipboard"):
-    shutil.copy2(path, path + ".bak-custom-clipboard")
-text = open(path).read()
-new = re.sub(r'(?m)^show-on-mouse-pos=[^,]+,[^,]+,', 'show-on-mouse-pos=none,none,', text)
-# Older builds registered as clipdeck; disable only that legacy action.
-new = re.sub(r'(?m)(^\[clipdeck\]\n)(.*?)(?=^\[|\Z)',
-             lambda m: m[1] + re.sub(r'(?m)^show-clipboard=[^,]*,',
-                                    'show-clipboard=none,', m[2]),
-             new, flags=re.S)
-if new != text:
-    open(path, "w").write(new)
-    print("    Klipper Meta+V released (backup: kglobalshortcutsrc.bak-custom-clipboard)")
-else:
-    print("    already released, nothing to change")
-PY
+python3 "$SRC_DIR/tools/shortcuts.py" install \
+    "$CONFIG_HOME/kglobalshortcutsrc" \
+    "$CONFIG_HOME/kglobalshortcutsrc.bak-custom-clipboard"
 
 echo
 echo "Installed."

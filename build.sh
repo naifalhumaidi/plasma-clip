@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 QT_MODULES="Qt6Widgets Qt6DBus Qt6Sql"
-KGA_INC="/usr/include/KF6/KGlobalAccel"
+KGA_INC="${KF6_GLOBALACCEL_INCLUDE_DIR:-/usr/include/KF6/KGlobalAccel}"
 
 missing=0
 for m in $QT_MODULES; do
@@ -19,6 +19,7 @@ done
 if [ ! -f "$KGA_INC/kglobalaccel.h" ]; then
     echo "ERROR: KGlobalAccel headers not found at $KGA_INC" >&2
     echo "  Arch: sudo pacman -S kglobalaccel" >&2
+    echo "  Custom prefix: set KF6_GLOBALACCEL_INCLUDE_DIR to the header directory" >&2
     missing=1
 fi
 

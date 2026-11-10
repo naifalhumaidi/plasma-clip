@@ -1,50 +1,32 @@
 #!/usr/bin/env bash
-# Remove custom-clipboard and restore Klipper's original Meta+V binding.
+# Remove custom-clipboard and restore the original shortcut values.
 set -euo pipefail
 
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+AUTOSTART_UNIT='app-custom\x2dclipboard@autostart.service'
+
 echo "==> stopping app"
-systemctl --user stop 'app-custom\x2dclipboard@autostart.service' 2>/dev/null || true
+systemctl --user stop "$AUTOSTART_UNIT" 2>/dev/null || true
 pkill -f "$HOME/.local/bin/custom-clipboard" 2>/dev/null || true
 
 echo "==> removing files"
 rm -f "$HOME/.local/bin/custom-clipboard"
-rm -f "$HOME/.config/autostart/custom-clipboard.desktop"
-rm -f "$HOME/.config/custom-clipboard.ini"
+rm -f "$CONFIG_HOME/autostart/custom-clipboard.desktop"
+rm -f "$CONFIG_HOME/custom-clipboard/custom-clipboard.conf"
+rmdir "$CONFIG_HOME/custom-clipboard" 2>/dev/null || true
 
-rm -f "$HOME/.config/systemd/user/app-custom\\x2dclipboard@autostart.service.d/override.conf"
+rm -f "$CONFIG_HOME/systemd/user/${AUTOSTART_UNIT}.d/override.conf"
 systemctl --user daemon-reload
 
-echo "==> restoring Klipper's Meta+V"
-python3 - "$HOME/.config/kglobalshortcutsrc" <<'PY' 2>/dev/null || echo "    (could not edit kglobalshortcutsrc)"
-import os, re, sys
-path = sys.argv[1]
-if not os.path.exists(path):
-    sys.exit(0)
-text = open(path).read()
-new = re.sub(r'(?m)^show-on-mouse-pos=[^,]+,[^,]+,',
-             'show-on-mouse-pos=Meta+V,Meta+V,', text)
-if new != text:
-    open(path, "w").write(new)
-    print("    Klipper Meta+V restored (takes effect after re-login)")
-else:
-    print("    already on Meta+V")
-PY
-
-echo "==> removing custom-clipboard's shortcut block"
-python3 - "$HOME/.config/kglobalshortcutsrc" <<'PY' 2>/dev/null || true
-import re, sys
-path = sys.argv[1]
-text = open(path).read()
-new = re.sub(r'\[custom-clipboard\]\n(?:[^\n]*\n)*\n?', '', text)
-if new != text:
-    open(path, "w").write(new)
-    print("    removed [custom-clipboard] group")
-PY
+echo "==> restoring original shortcut values"
+python3 "$(dirname "$0")/tools/shortcuts.py" restore \
+    "$CONFIG_HOME/kglobalshortcutsrc" \
+    "$CONFIG_HOME/kglobalshortcutsrc.bak-custom-clipboard"
 
 cat <<'EOF'
 
-Note: ydotool.service was left enabled (it is harmless and tiny).
+Note: ydotool.service was left enabled for other applications.
 To remove it too:  systemctl --user disable --now ydotool.service
 
-The built binary and sources remain in ~/.local/src/custom-clipboard/
+The source repository remains where you unpacked it.
 EOF

@@ -1,5 +1,19 @@
 # AGENTS.md
 
+## Start here
+
+This project targets KDE Plasma with Klipper, Qt 6 and KF6. Read
+[README.md](README.md) for the user-facing setup and [DEVELOPMENT.md](DEVELOPMENT.md)
+for build and verification limits. The notes below record concrete regressions;
+keep their safeguards in place and report what was actually verified.
+
+**Never run the current `--test` suite against a user's normal profile.** It
+constructs the UI before its internal redirect and copies the selected
+`XDG_DATA_HOME/klipper` database and image tree. Run it only with synthetic
+clipboard data under an isolated `XDG_DATA_HOME`, private `TMPDIR`, and private
+D-Bus address. The test harness's three final ydotool/Klipper integration checks
+will be unavailable in that setup; see `DEVELOPMENT.md`.
+
 Hard-won rules for AI agents (or anyone) editing this codebase. Every item here
 corresponds to a bug that actually happened and cost real debugging time.
 
@@ -257,13 +271,14 @@ There is a fixture-based test for this; keep it that way.
 
 ```bash
 ./build.sh
-QT_QPA_PLATFORM=offscreen ./custom-clipboard --test          # must be ALL TESTS PASSED
-QT_QPA_PLATFORM=offscreen ./custom-clipboard --preview /tmp/s
+QT_QPA_PLATFORM=offscreen ./custom-clipboard --preview /tmp/custom-clipboard-preview
 ```
 
-Then **look at the PNGs**. Rendering a view and reading it catches layout bugs
-that code review cannot: overlapping text, controls centred against the wrong
-widget, a stray frame line. Three bugs were found this way.
+Only run `--test` with the isolated synthetic fixture described in
+`DEVELOPMENT.md`; do not let it seed itself from a real profile. Then **look at
+the preview PNGs** when visual layout is part of the change. Rendering a view and
+reading it catches layout bugs that code review cannot: overlapping text,
+controls centred against the wrong widget, or a stray frame line.
 
 Report honestly what is verified and what is not. Interaction that depends on a
 compositor handing focus back to another window cannot be verified headlessly —
